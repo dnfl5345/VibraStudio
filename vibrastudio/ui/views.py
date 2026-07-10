@@ -422,7 +422,12 @@ class FrfView(BaseView):
         self.channel_box.blockSignals(True)
         self.channel_box.clear()
         self.channel_box.addItems(self.labels)
-        self.channel_box.setCurrentIndex(max(0, cur) if cur < len(self.labels) else 0)
+        if 0 < cur < len(self.labels):
+            self.channel_box.setCurrentIndex(cur)
+        else:
+            # Default to the first non-reference channel: the self-FRF of the
+            # reference is identically 1 and tells the user nothing.
+            self.channel_box.setCurrentIndex(1 if len(self.labels) > 1 else 0)
         self.channel_box.blockSignals(False)
 
     def update_view(self, analyzer: dsp.StreamingAnalyzer, ref_label: str) -> None:
