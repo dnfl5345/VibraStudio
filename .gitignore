@@ -14,6 +14,10 @@ outputs/
 recordings/
 *.npz
 
+# PyInstaller
+build/
+dist/
+
 # OS
 Thumbs.db
 .DS_Store

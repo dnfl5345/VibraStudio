@@ -27,6 +27,17 @@ Python(PySide6 + pyqtgraph)으로 구현했습니다.
 ![FFT Spectrum](docs/screenshot_fft_spectrum.png)
 ![ODS](docs/screenshot_ods_modes.png)
 
+## 실행 파일 (권장 — Python 설치 불필요)
+
+```powershell
+# 빌드 (개발 PC에서 1회)
+powershell -ExecutionPolicy Bypass -File packaging\build_exe.ps1
+```
+
+빌드 결과물 `dist\VibraStudio\VibraStudio.exe` 를 더블클릭하면 바로 실행됩니다.
+`dist\VibraStudio` 폴더를 통째로 복사하면 다른 PC에서도 동작합니다
+(하드웨어 사용 시 해당 PC에 NI-DAQmx 드라이버만 필요, 시뮬레이션은 아무것도 필요 없음).
+
 ## 설치
 
 ```powershell
