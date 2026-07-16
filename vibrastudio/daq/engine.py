@@ -2,13 +2,109 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import traceback
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from ..config import AcquisitionConfig, ChannelConfig
 from .simulator import SimBackend
+
+# C-series dynamic-signal modules with IEPE excitation (accelerometer inputs).
+_IEPE_MODULE_PAT = re.compile(r"\b9(230|231|232|234|250|260)\b")
+
+
+@dataclass
+class ConnectResult:
+    """Outcome of an auto-connect scan over the NI-DAQmx system."""
+
+    ok: bool = False
+    chassis: list[str] = field(default_factory=list)      # "name (product)"
+    modules: list[tuple[str, str]] = field(default_factory=list)  # (name, product)
+    channels: list[str] = field(default_factory=list)     # preferred AI channels
+    all_channels: list[str] = field(default_factory=list)
+    reserved: list[str] = field(default_factory=list)     # chassis reserved by us
+    messages: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        if not self.ok:
+            return self.messages[-1] if self.messages else "No DAQ device found"
+        mods = ", ".join(
+            f"Mod{n.rsplit('Mod', 1)[-1]}:{p}" if "Mod" in n else f"{n}:{p}"
+            for n, p in self.modules
+        ) or "no modules"
+        chassis = self.chassis[0] if self.chassis else "device"
+        extra = " (reserved)" if self.reserved else ""
+        return f"{chassis}{extra} — {mods} — {len(self.channels)} AI ch"
+
+
+def auto_connect(reserve: bool = True, prefer_iepe: bool = True) -> ConnectResult:
+    """Discover NI-DAQmx devices and make them usable without NI MAX.
+
+    Network cDAQ chassis (e.g. cDAQ-9189) lose their host reservation after
+    a reboot or an ownership change; their modules then enumerate empty even
+    though the chassis answers on the network. This scans the system, reserves
+    any module-less network chassis, and returns the usable AI channels,
+    preferring IEPE-capable dynamic modules (NI-923x) for accelerometers.
+    """
+    res = ConnectResult()
+    try:
+        import nidaqmx
+    except Exception as exc:
+        res.messages.append(f"nidaqmx unavailable: {exc}")
+        return res
+
+    try:
+        devices = list(nidaqmx.system.System.local().devices)
+    except Exception as exc:
+        res.messages.append(f"DAQmx system scan failed: {exc}")
+        return res
+
+    if not devices:
+        res.messages.append("No NI devices configured on this system")
+        return res
+
+    for dev in devices:
+        name = str(getattr(dev, "name", "?"))
+        product = str(getattr(dev, "product_type", "?"))
+        try:
+            modules = [(m.name, str(m.product_type)) for m in dev.chassis_module_devices]
+        except Exception:
+            modules = []
+        is_chassis = "Mod" not in name and (modules or "cDAQ" in product or "cRIO" in product)
+        if not is_chassis:
+            continue
+        res.chassis.append(f"{name} ({product})")
+
+        if not modules and reserve:
+            try:
+                dev.reserve_network_device(override_reservation=True)
+                res.reserved.append(name)
+                res.messages.append(f"Reserved network chassis {name}")
+                modules = [(m.name, str(m.product_type)) for m in dev.chassis_module_devices]
+            except Exception as exc:
+                res.messages.append(f"Reserve failed for {name}: {exc}")
+        res.modules.extend(modules)
+
+    # Enumerate AI channels (chassis reservation above may have added modules).
+    iepe_channels: list[str] = []
+    for dev in nidaqmx.system.System.local().devices:
+        try:
+            chans = [ch.name for ch in dev.ai_physical_chans]
+        except Exception:
+            continue
+        res.all_channels.extend(chans)
+        if _IEPE_MODULE_PAT.search(str(getattr(dev, "product_type", ""))):
+            iepe_channels.extend(chans)
+
+    res.all_channels = sorted(set(res.all_channels))
+    res.channels = sorted(set(iepe_channels)) if (prefer_iepe and iepe_channels) else res.all_channels
+    res.ok = len(res.channels) > 0
+    if not res.ok and not res.messages:
+        res.messages.append("Devices found but no AI channels available")
+    return res
 
 
 # ----------------------------------------------------------------------
@@ -165,6 +261,7 @@ class AcquisitionEngine:
         channels: list[ChannelConfig],
         acq: AcquisitionConfig,
         buffer_seconds: float = 30.0,
+        backend=None,
     ) -> None:
         self.channels = channels
         self.acq = acq
@@ -178,7 +275,9 @@ class AcquisitionEngine:
         self._listeners: list = []   # callables(block) e.g. recorder
         self._listener_lock = threading.Lock()
 
-        if acq.simulate:
+        if backend is not None:
+            self.backend = backend   # e.g. PlaybackBackend
+        elif acq.simulate:
             self.backend = SimBackend(channels, acq.sample_rate, acq.chunk_size)
         else:
             self.backend = NidaqBackend(channels, acq)

@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QMainWindow, QMessageBox, QTabWidget, QWidget,
 )
 
 from .. import __app_name__, __version__
-from ..config import AppConfig, channels_from_detected, default_channel_template
-from ..daq.engine import AcquisitionEngine, discover_ai_channels
+from ..config import (
+    AppConfig, ChannelConfig, channels_from_detected, default_channel_template,
+)
+from ..daq.engine import AcquisitionEngine, ConnectResult, auto_connect
+from ..daq.playback import PlaybackBackend, RecordingData, load_recording
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
@@ -28,6 +32,8 @@ GUI_TICK_MS = 60
 
 
 class MainWindow(QMainWindow):
+    _connect_finished = Signal(object, bool)  # (ConnectResult, was_auto)
+
     def __init__(self, cfg: AppConfig) -> None:
         super().__init__()
         self.cfg = cfg
@@ -79,6 +85,10 @@ class MainWindow(QMainWindow):
         self.sidebar.default_requested.connect(self.load_default_channels)
         self.sidebar.save_config.connect(self.save_config)
         self.sidebar.load_config.connect(self.load_config)
+        self.sidebar.open_file_requested.connect(self.open_recording)
+        self.sidebar.source_box.currentIndexChanged.connect(self._on_source_changed)
+        self.view_ods.channels_mapped.connect(self._on_channels_mapped)
+        self.playback: RecordingData | None = None
 
         self.view_spec.reset_btn.clicked.connect(
             lambda: self.analyzer.reset_averaging() if self.analyzer else None)
@@ -87,15 +97,17 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(GUI_TICK_MS)
         self.timer.timeout.connect(self.on_tick)
 
-        # Populate channel table (auto-detect hardware if present).
+        self._connect_finished.connect(self._on_connect_finished)
+        self._connecting = False
+
+        # Populate the table immediately, then look for hardware in the
+        # background (network chassis reservation can take a few seconds).
         if not cfg.channels:
-            detected = discover_ai_channels()
-            if detected:
-                cfg.channels = channels_from_detected(detected)
-            else:
-                cfg.channels = default_channel_template()
-                self.sidebar.source_box.setCurrentIndex(1)  # simulation
+            cfg.channels = default_channel_template()
         self.sidebar.load_from_config(cfg)
+        self.view_ods.set_geometry_dict(cfg.geometry)
+        if not cfg.acquisition.simulate:
+            QTimer.singleShot(300, lambda: self.detect_hardware(auto=True))
 
     # ------------------------------------------------------------------
     def refresh_channel_dependent_ui(self) -> None:
@@ -107,30 +119,156 @@ class MainWindow(QMainWindow):
             view.set_channels(labels)
         self.view_ods.set_channel_configs(enabled)
 
-    def detect_hardware(self) -> None:
-        detected = discover_ai_channels()
-        if not detected:
-            QMessageBox.warning(self, "Detect", "No NI-DAQmx AI channels found.\n"
-                                "Check NI MAX / device power, or use Simulation mode.")
+    # -- device auto-connect ---------------------------------------------
+    def detect_hardware(self, auto: bool = False) -> None:
+        """Scan for DAQ hardware; reserve network chassis if needed (async)."""
+        if self._connecting:
             return
-        self.cfg.channels = channels_from_detected(detected)
-        self.sidebar.channel_table.load(self.cfg.channels)
-        self.statusBar().showMessage(f"Detected {len(detected)} AI channels — mapped first {len(self.cfg.channels)}")
+        self._connecting = True
+        self.sidebar.detect_btn.setEnabled(False)
+        self.sidebar.set_device_info("Connecting… scanning NI-DAQmx devices")
+        self.statusBar().showMessage("Connecting to DAQ hardware…")
+
+        def worker() -> None:
+            try:
+                result = auto_connect(reserve=True, prefer_iepe=True)
+            except Exception as exc:  # defensive: never kill the GUI thread
+                result = ConnectResult(messages=[f"auto-connect crashed: {exc}"])
+            self._connect_finished.emit(result, auto)
+
+        threading.Thread(target=worker, daemon=True, name="daq-connect").start()
+
+    def _on_connect_finished(self, res: ConnectResult, was_auto: bool) -> None:
+        self._connecting = False
+        self.sidebar.detect_btn.setEnabled(True)
+
+        if not res.ok:
+            self.sidebar.set_device_info(res.summary(), connected=False)
+            if was_auto:
+                # Silent fallback at startup: keep the app usable without HW.
+                self.sidebar.source_box.setCurrentIndex(1)
+                self.statusBar().showMessage(
+                    "No DAQ hardware found — Simulation mode (press Connect DAQ to retry)")
+            else:
+                QMessageBox.warning(
+                    self, "Connect DAQ",
+                    "No NI-DAQmx AI channels found.\n\n"
+                    + "\n".join(res.messages[-3:] or ["Check device power / Ethernet link."])
+                    + "\n\nYou can keep working in Simulation mode.")
+            return
+
+        # Success: map channels and switch to hardware source (idle only).
+        if self.engine is None or not self.engine.running:
+            self.cfg.channels = channels_from_detected(res.channels)
+            self.sidebar.channel_table.load(self.cfg.channels)
+            self.sidebar.source_box.setCurrentIndex(0)
+        self.sidebar.set_device_info(res.summary(), connected=True)
+        note = " · chassis reserved" if res.reserved else ""
+        self.statusBar().showMessage(
+            f"DAQ connected: {len(res.channels)} AI channels mapped{note}")
 
     def load_default_channels(self) -> None:
         self.cfg.channels = default_channel_template()
         self.sidebar.channel_table.load(self.cfg.channels)
 
+    def _on_channels_mapped(self, mapped: list) -> None:
+        """ODS auto-map rewrote node/direction assignments — sync the table."""
+        # Mapped list covers enabled channels only; merge back by label.
+        by_label = {c.label: c for c in mapped}
+        for ch in self.cfg.channels:
+            m = by_label.get(ch.label)
+            if m is not None:
+                ch.point, ch.direction, ch.position = m.point, m.direction, m.position
+        self.sidebar.channel_table.load(self.cfg.channels)
+        self.statusBar().showMessage(
+            f"Channels auto-mapped onto {self.view_ods.geometry.name} "
+            f"({self.view_ods.geometry.n_nodes} nodes)")
+
+    # -- file playback -----------------------------------------------------
+    def _on_source_changed(self, index: int) -> None:
+        if index == 2 and self.playback is None:
+            self.open_recording()
+
+    def open_recording(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open recording", "recordings",
+            "Recordings (*.npz *.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            rec = load_recording(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Open Recording", f"Failed to load file:\n{exc}")
+            return
+
+        self.playback = rec
+        self.cfg.channels = self._channels_from_labels(rec.channels)
+        self.sidebar.channel_table.load(self.cfg.channels)
+        self.sidebar.source_box.setCurrentIndex(2)
+        self.sidebar.fs_box.setCurrentText(f"{rec.fs:g}")
+        self.sidebar.file_label.setText(
+            f"{Path(rec.path).name} — {len(rec.channels)} ch · "
+            f"{rec.fs:g} Hz · {rec.duration:.1f} s")
+        self.statusBar().showMessage(
+            f"Recording loaded: {Path(rec.path).name} ({rec.duration:.1f} s)")
+
+        # Start replaying immediately — an idle screen after picking a file
+        # reads as "the file did not load".
+        if self.engine is not None and self.engine.running:
+            self.stop_streaming()
+        self.start_streaming()
+
+    @staticmethod
+    def _channels_from_labels(labels: list[str]) -> list[ChannelConfig]:
+        """Rebuild channel geometry from recorded labels like 'S3_Z'."""
+        import re
+
+        out: list[ChannelConfig] = []
+        n_points = max(1, len(labels) // 2)
+        for i, label in enumerate(labels):
+            m = re.match(r"^S(\d+)[_-]?([XYZ])$", label.strip(), re.IGNORECASE)
+            point = int(m.group(1)) if m else i // 2 + 1
+            direction = m.group(2).upper() if m else ("X" if i % 2 == 0 else "Z")
+            out.append(ChannelConfig(
+                physical_channel=f"file/ch{i}", label=label, enabled=True,
+                point=point, direction=direction,
+                position=point / max(n_points, point),
+                sensitivity_mv_g=100.0, is_reference=(i == 0)))
+        return out
+
     # ------------------------------------------------------------------
     def start_streaming(self) -> None:
         self.sidebar.apply_to_config(self.cfg)
+        is_playback = self.sidebar.source_box.currentIndex() == 2
+
+        if is_playback:
+            if self.playback is None:
+                self.open_recording()
+                if self.playback is None:
+                    return
+            # Sample rate always comes from the file.
+            self.cfg.acquisition.sample_rate = self.playback.fs
+            self.sidebar.fs_box.setCurrentText(f"{self.playback.fs:g}")
+
         enabled = self.cfg.enabled_channels()
         if not enabled:
             QMessageBox.warning(self, "Channels", "Enable at least one channel.")
             return
 
+        backend = None
+        if is_playback:
+            rows = [i for i, c in enumerate(self.cfg.channels) if c.enabled]
+            if max(rows) >= self.playback.data.shape[0]:
+                QMessageBox.warning(self, "Playback",
+                                    "Channel table no longer matches the loaded file — reloading it.")
+                self.cfg.channels = self._channels_from_labels(self.playback.channels)
+                self.sidebar.channel_table.load(self.cfg.channels)
+                return
+            backend = PlaybackBackend(self.playback, self.cfg.acquisition.chunk_size,
+                                      channel_rows=rows)
+
         try:
-            self.engine = AcquisitionEngine(enabled, self.cfg.acquisition)
+            self.engine = AcquisitionEngine(enabled, self.cfg.acquisition, backend=backend)
             self.engine.start()
         except Exception as exc:
             self.engine = None
@@ -146,7 +284,8 @@ class MainWindow(QMainWindow):
         self._read_mark = 0
         self._t_start = time.perf_counter()
         self.sidebar.set_running(True)
-        mode = "Simulation" if self.cfg.acquisition.simulate else "Hardware"
+        mode = ("Playback" if is_playback
+                else "Simulation" if self.cfg.acquisition.simulate else "Hardware")
         self.statusBar().showMessage(
             f"Streaming {len(enabled)} ch @ {self.cfg.acquisition.sample_rate:.0f} Hz ({mode})")
         self.timer.start()
@@ -210,7 +349,13 @@ class MainWindow(QMainWindow):
         fs = engine.fs
         total = engine.ring.total
         elapsed = time.perf_counter() - self._t_start
-        self.sidebar.set_stat("State", "● Streaming" + ("  [REC]" if self.recorder.recording else ""))
+        if isinstance(engine.backend, PlaybackBackend):
+            pb = engine.backend
+            pct = 100.0 * pb.position / max(1, pb.n)
+            state = f"▶ Playback {pct:.0f}%" + (f" (loop {pb.loops + 1})" if pb.loops else "")
+        else:
+            state = "● Streaming"
+        self.sidebar.set_stat("State", state + ("  [REC]" if self.recorder.recording else ""))
         self.sidebar.set_stat("Samples/ch", f"{total:,}")
         self.sidebar.set_stat("Elapsed", f"{elapsed:.1f} s")
         self.sidebar.set_stat("Buffer", f"{min(100, 100*total/engine.ring.capacity):.0f} %")
@@ -248,6 +393,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def save_config(self) -> None:
         self.sidebar.apply_to_config(self.cfg)
+        self.cfg.geometry = self.view_ods.geometry_dict()
         path, _ = QFileDialog.getSaveFileName(self, "Save configuration",
                                               "vibrastudio_config.json", "JSON (*.json)")
         if path:
@@ -264,6 +410,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Config", f"Failed to load config:\n{exc}")
                 return
             self.sidebar.load_from_config(self.cfg)
+            self.view_ods.set_geometry_dict(self.cfg.geometry)
             self.statusBar().showMessage(f"Config loaded: {path}")
 
     def closeEvent(self, event) -> None:  # noqa: N802

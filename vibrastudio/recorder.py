@@ -100,5 +100,6 @@ class StreamRecorder:
                 w = csv.writer(f)
                 w.writerow(["time_s", *self.channel_names])
                 for k in range(data.shape[1]):
-                    w.writerow([f"{t[k]:.7f}", *(f"{v:.6e}" for v in data[:, k])])
+                    # 9 decimals: 7 was too coarse to recover fs from the file.
+                    w.writerow([f"{t[k]:.9f}", *(f"{v:.6e}" for v in data[:, k])])
         return npz_path

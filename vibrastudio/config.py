@@ -57,6 +57,7 @@ class AppConfig:
     acquisition: AcquisitionConfig = field(default_factory=AcquisitionConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     channels: list[ChannelConfig] = field(default_factory=list)
+    geometry: dict = field(default_factory=dict)   # ODS 3D structure (see geometry.py)
 
     # ------------------------------------------------------------------
     def enabled_channels(self) -> list[ChannelConfig]:
@@ -84,6 +85,7 @@ class AppConfig:
             acquisition=AcquisitionConfig(**raw.get("acquisition", {})),
             analysis=AnalysisConfig(**raw.get("analysis", {})),
             channels=[ChannelConfig(**c) for c in raw.get("channels", [])],
+            geometry=dict(raw.get("geometry", {})),
         )
         return cfg
 

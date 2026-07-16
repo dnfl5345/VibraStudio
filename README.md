@@ -17,7 +17,7 @@ Python(PySide6 + pyqtgraph)으로 구현했습니다.
 | **Octave** | IEC 61260 1/1·1/3 옥타브 밴드 레벨 | Octave Analysis |
 | **Envelope** | 대역통과 + Hilbert 포락선 스펙트럼 (베어링 결함 진단) | Envelope Detection |
 | **FRF / Coherence** | 기준 채널 대비 H1 전달률(Transmissibility), 위상, Coherence | Frequency Response (SVXMPL) |
-| **ODS / Modes** | 선택 주파수에서의 운전변형형상(ODS) 실시간 애니메이션 — 진폭(자기스펙트럼) + 상대위상(크로스스펙트럼), 피크 자동 탐색, X/Z 양방향 표시 | ODS / Modal 측정 |
+| **ODS / Modes** | 선택 주파수에서의 운전변형형상(ODS)을 **3D 구조 위에 실시간 애니메이션** — 진폭(자기스펙트럼) + 상대위상(크로스스펙트럼), 피크 자동 탐색. 구조는 파라메트릭 템플릿(보/평판/링/원통 — 예: 12노드×2층 원통)으로 빌드하고 채널을 노드·방향(X/Y/Z)에 자동 매핑 | ODS / Modal 측정 |
 | **Metrics** | 채널별 RMS·Peak·Crest·Kurtosis·Skew·지배주파수 라이브 테이블, 충격성(베어링 손상 의심) 플래그 | Vibration Level |
 
 - **레코딩**: 스트리밍 중 NPZ(+메타데이터 JSON, 옵션 CSV) 저장
@@ -26,6 +26,17 @@ Python(PySide6 + pyqtgraph)으로 구현했습니다.
 
 ![FFT Spectrum](docs/screenshot_fft_spectrum.png)
 ![ODS](docs/screenshot_ods_modes.png)
+
+## 실행 파일 (권장 — Python 설치 불필요)
+
+```powershell
+# 빌드 (개발 PC에서 1회)
+powershell -ExecutionPolicy Bypass -File packaging\build_exe.ps1
+```
+
+빌드 결과물 `dist\VibraStudio\VibraStudio.exe` 를 더블클릭하면 바로 실행됩니다.
+`dist\VibraStudio` 폴더를 통째로 복사하면 다른 PC에서도 동작합니다
+(하드웨어 사용 시 해당 PC에 NI-DAQmx 드라이버만 필요, 시뮬레이션은 아무것도 필요 없음).
 
 ## 설치
 
@@ -49,7 +60,10 @@ python -m venv .venv312
 1. **Source**에서 Hardware / Simulation 선택 → 샘플링 레이트(NI-9230 최대 12.8 kS/s) 확인
 2. **Channels** 카드에서 `Detect HW`로 실제 채널 매핑(현재 4개 센서 연결 시 4채널 자동 인식), 또는 `Default 18ch` 템플릿 사용. 센서 위치(Pos 0~1)·방향(X/Z)·감도(mV/g)·기준(Ref) 채널 설정
 3. **▶ Start Streaming** → 탭별 실시간 해석
-4. ODS 탭: 스트리밍 상태에서 `Find Peaks` → 피크 선택 → 변형 형상 애니메이션 (`Freeze`로 고정)
+4. ODS 탭: 스트리밍 상태에서 `Find Peaks` → 피크 선택 → 3D 변형 형상 애니메이션 (`Freeze`로 고정)
+5. ODS 3D 구조 빌더: `Shape`(Line/Grid/Circle/Cylinder) 선택 → 파라미터(노드 수·층 수) 입력 →
+   `Build Structure` → `Auto-map Channels`(X+Z / X+Y+Z / 단축 매핑). 예: Cylinder, 12 nodes/ring, 2 layers
+   = 12노드×2층 원통. 매핑은 채널 테이블의 Pt(노드 id)·Dir 열로 직접 수정 가능하며 Save Config에 함께 저장됨
 
 ## 아키텍처
 
