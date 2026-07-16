@@ -65,8 +65,8 @@ class TimeSeriesView(BaseView):
         self.window_spin.setSuffix(" s")
         self.window_spin.setDecimals(2)
         self.mode_box = QComboBox()
-        self.mode_box.addItems(["Overlay", "Stacked"])
-        self.mode_box.setCurrentText("Stacked")
+        self.mode_box.addItems(["Stacked (norm)", "Stacked", "Overlay"])
+        self.mode_box.setCurrentText("Stacked (norm)")
         self.legend_chk = QCheckBox("Legend")
         self.legend_chk.setChecked(True)
 
@@ -98,24 +98,47 @@ class TimeSeriesView(BaseView):
             return
         n = data.shape[1]
         t = t_end - (n - 1 - np.arange(n)) / fs
-        stacked = self.mode_box.currentText() == "Stacked"
+        mode = self.mode_box.currentText()
+        normalized = mode == "Stacked (norm)"
+        stacked = mode == "Stacked"
         vis_idx = [i for i in range(len(self.curves)) if self.visible[i]]
         if stacked and vis_idx:
             spans = [max(1e-6, float(np.ptp(data[i]))) for i in vis_idx]
             step = 1.1 * max(spans)
         else:
             step = 0.0
+
         slot = 0
+        tick_rows = []
         for i, curve in enumerate(self.curves):
             if not self.visible[i]:
                 curve.setVisible(False)
                 continue
             curve.setVisible(True)
-            offset = (len(vis_idx) - 1 - slot) * step if stacked else 0.0
-            curve.setData(t, data[i] + offset)
+            if normalized:
+                # Each channel auto-scales into its own unit-height lane, so
+                # a 0.1 mg channel is as readable as a 0.1 g one.
+                y = data[i] - float(np.mean(data[i]))
+                span = max(1e-12, float(np.max(np.abs(y))))
+                lane = float(len(vis_idx) - 1 - slot)
+                curve.setData(t, lane + 0.42 * y / span)
+                tick_rows.append((lane, self.labels[i]))
+            else:
+                offset = (len(vis_idx) - 1 - slot) * step if stacked else 0.0
+                curve.setData(t, data[i] + offset)
             slot += 1
+
+        axis = self.plot.getAxis("left")
+        if normalized:
+            axis.setTicks([tick_rows])
+            self.plot.setLabel("left", "")
+            self.plot.disableAutoRange(axis="y")
+            self.plot.setYRange(-0.7, len(vis_idx) - 0.3, padding=0)
+        else:
+            axis.setTicks(None)
+            self.plot.setLabel("left", "Acceleration (g)", color=theme.TEXT_FAINT)
+            self.plot.enableAutoRange(axis="y")
         self.plot.setXRange(t[0], t[-1], padding=0.01)
-        self.plot.enableAutoRange(axis="y")
 
 
 # ======================================================================

@@ -238,18 +238,27 @@ class OdsView(BaseView):
                 if j == 0:
                     item.setForeground(pg.mkColor(self.color(i)))
                 self.table.setItem(i, j, item)
+        self._refresh_table()   # keep cached values visible after a rebuild
         self._rebuild_static()
+
+    def _refresh_table(self) -> None:
+        """Write cached amplitude/phase into the table (survives Freeze/rebuild)."""
+        if self._amp is None or self._phi is None:
+            return
+        for i in range(min(len(self.channel_cfgs), self.table.rowCount(),
+                           self._amp.size)):
+            self.table.item(i, 3).setText(f"{self._amp[i]:.4g}")
+            self.table.item(i, 4).setText(f"{np.degrees(self._phi[i]):.1f}")
 
     def update_view(self, analyzer: StreamingAnalyzer) -> None:
         """Refresh ODS amplitudes/phases from the current averaged spectra."""
         self._analyzer = analyzer
         if analyzer.navg < 2 or self.hold_btn.isChecked():
+            self._refresh_table()
             return
         f_actual, amp, phase = analyzer.ods_at(self.freq_spin.value())
         self._f_actual, self._amp, self._phi = f_actual, amp, phase
-        for i in range(min(len(self.channel_cfgs), amp.size)):
-            self.table.item(i, 3).setText(f"{amp[i]:.4g}")
-            self.table.item(i, 4).setText(f"{np.degrees(phase[i]):.1f}")
+        self._refresh_table()
         self.info.setText(f"bin: {f_actual:.2f} Hz   avg: {analyzer.navg}")
 
     def _find_peaks(self) -> None:

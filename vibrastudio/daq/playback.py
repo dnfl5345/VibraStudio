@@ -51,10 +51,15 @@ def load_recording(path: str | Path) -> RecordingData:
             raise ValueError("CSV contains too few samples")
         arr = np.asarray(rows, dtype=np.float64)
         t = arr[:, 0]
-        dt = np.median(np.diff(t))
-        if dt <= 0:
+        span = t[-1] - t[0]
+        if span <= 0:
             raise ValueError("CSV time column is not increasing")
-        return RecordingData(arr[:, 1:].T.copy(), 1.0 / dt, channels, str(path))
+        # Full-span estimate averages out per-row decimal truncation
+        # (a median of diffs turns 8192 Hz into 8190 Hz at 7 decimals).
+        fs = (len(t) - 1) / span
+        if abs(fs - round(fs)) < 0.1:   # snap to the (integer) requested rate
+            fs = float(round(fs))
+        return RecordingData(arr[:, 1:].T.copy(), fs, channels, str(path))
 
     raise ValueError(f"Unsupported file type: {path.suffix} (use .npz or .csv)")
 

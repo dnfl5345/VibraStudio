@@ -210,7 +210,13 @@ class MainWindow(QMainWindow):
             f"{Path(rec.path).name} — {len(rec.channels)} ch · "
             f"{rec.fs:g} Hz · {rec.duration:.1f} s")
         self.statusBar().showMessage(
-            f"Recording loaded: {Path(rec.path).name} ({rec.duration:.1f} s) — press Start Streaming to replay")
+            f"Recording loaded: {Path(rec.path).name} ({rec.duration:.1f} s)")
+
+        # Start replaying immediately — an idle screen after picking a file
+        # reads as "the file did not load".
+        if self.engine is not None and self.engine.running:
+            self.stop_streaming()
+        self.start_streaming()
 
     @staticmethod
     def _channels_from_labels(labels: list[str]) -> list[ChannelConfig]:
