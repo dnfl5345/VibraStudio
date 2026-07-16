@@ -1,12 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import copy_metadata
+
+datas = []
+hiddenimports = []
+datas += copy_metadata('nidaqmx')
+datas += copy_metadata('nitypes')
+datas += copy_metadata('hightime')
+datas += copy_metadata('deprecation')
+datas += copy_metadata('tzlocal')
+hiddenimports += collect_submodules('nidaqmx')
 
 
 a = Analysis(
     ['run_app.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
