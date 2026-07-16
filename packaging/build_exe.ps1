@@ -23,6 +23,8 @@ if (-not (Test-Path $py)) { Write-Error "venv not found: $py"; exit 1 }
     --copy-metadata deprecation `
     --copy-metadata tzlocal `
     --collect-submodules nidaqmx `
+    --collect-submodules OpenGL `
+    --hidden-import pyqtgraph.opengl `
     run_app.py
 
 if ($LASTEXITCODE -eq 0) {

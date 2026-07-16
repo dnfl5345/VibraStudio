@@ -3,13 +3,14 @@ from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import copy_metadata
 
 datas = []
-hiddenimports = []
+hiddenimports = ['pyqtgraph.opengl']
 datas += copy_metadata('nidaqmx')
 datas += copy_metadata('nitypes')
 datas += copy_metadata('hightime')
 datas += copy_metadata('deprecation')
 datas += copy_metadata('tzlocal')
 hiddenimports += collect_submodules('nidaqmx')
+hiddenimports += collect_submodules('OpenGL')
 
 
 a = Analysis(

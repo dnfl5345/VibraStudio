@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self.sidebar.load_config.connect(self.load_config)
         self.sidebar.open_file_requested.connect(self.open_recording)
         self.sidebar.source_box.currentIndexChanged.connect(self._on_source_changed)
+        self.view_ods.channels_mapped.connect(self._on_channels_mapped)
         self.playback: RecordingData | None = None
 
         self.view_spec.reset_btn.clicked.connect(
@@ -104,6 +105,7 @@ class MainWindow(QMainWindow):
         if not cfg.channels:
             cfg.channels = default_channel_template()
         self.sidebar.load_from_config(cfg)
+        self.view_ods.set_geometry_dict(cfg.geometry)
         if not cfg.acquisition.simulate:
             QTimer.singleShot(300, lambda: self.detect_hardware(auto=True))
 
@@ -168,6 +170,19 @@ class MainWindow(QMainWindow):
     def load_default_channels(self) -> None:
         self.cfg.channels = default_channel_template()
         self.sidebar.channel_table.load(self.cfg.channels)
+
+    def _on_channels_mapped(self, mapped: list) -> None:
+        """ODS auto-map rewrote node/direction assignments — sync the table."""
+        # Mapped list covers enabled channels only; merge back by label.
+        by_label = {c.label: c for c in mapped}
+        for ch in self.cfg.channels:
+            m = by_label.get(ch.label)
+            if m is not None:
+                ch.point, ch.direction, ch.position = m.point, m.direction, m.position
+        self.sidebar.channel_table.load(self.cfg.channels)
+        self.statusBar().showMessage(
+            f"Channels auto-mapped onto {self.view_ods.geometry.name} "
+            f"({self.view_ods.geometry.n_nodes} nodes)")
 
     # -- file playback -----------------------------------------------------
     def _on_source_changed(self, index: int) -> None:
@@ -372,6 +387,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def save_config(self) -> None:
         self.sidebar.apply_to_config(self.cfg)
+        self.cfg.geometry = self.view_ods.geometry_dict()
         path, _ = QFileDialog.getSaveFileName(self, "Save configuration",
                                               "vibrastudio_config.json", "JSON (*.json)")
         if path:
@@ -388,6 +404,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Config", f"Failed to load config:\n{exc}")
                 return
             self.sidebar.load_from_config(self.cfg)
+            self.view_ods.set_geometry_dict(self.cfg.geometry)
             self.statusBar().showMessage(f"Config loaded: {path}")
 
     def closeEvent(self, event) -> None:  # noqa: N802
