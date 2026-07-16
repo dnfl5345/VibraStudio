@@ -261,6 +261,7 @@ class AcquisitionEngine:
         channels: list[ChannelConfig],
         acq: AcquisitionConfig,
         buffer_seconds: float = 30.0,
+        backend=None,
     ) -> None:
         self.channels = channels
         self.acq = acq
@@ -274,7 +275,9 @@ class AcquisitionEngine:
         self._listeners: list = []   # callables(block) e.g. recorder
         self._listener_lock = threading.Lock()
 
-        if acq.simulate:
+        if backend is not None:
+            self.backend = backend   # e.g. PlaybackBackend
+        elif acq.simulate:
             self.backend = SimBackend(channels, acq.sample_rate, acq.chunk_size)
         else:
             self.backend = NidaqBackend(channels, acq)

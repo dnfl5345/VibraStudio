@@ -13,8 +13,11 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __app_name__, __version__
-from ..config import AppConfig, channels_from_detected, default_channel_template
+from ..config import (
+    AppConfig, ChannelConfig, channels_from_detected, default_channel_template,
+)
 from ..daq.engine import AcquisitionEngine, ConnectResult, auto_connect
+from ..daq.playback import PlaybackBackend, RecordingData, load_recording
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
@@ -82,6 +85,9 @@ class MainWindow(QMainWindow):
         self.sidebar.default_requested.connect(self.load_default_channels)
         self.sidebar.save_config.connect(self.save_config)
         self.sidebar.load_config.connect(self.load_config)
+        self.sidebar.open_file_requested.connect(self.open_recording)
+        self.sidebar.source_box.currentIndexChanged.connect(self._on_source_changed)
+        self.playback: RecordingData | None = None
 
         self.view_spec.reset_btn.clicked.connect(
             lambda: self.analyzer.reset_averaging() if self.analyzer else None)
@@ -163,16 +169,85 @@ class MainWindow(QMainWindow):
         self.cfg.channels = default_channel_template()
         self.sidebar.channel_table.load(self.cfg.channels)
 
+    # -- file playback -----------------------------------------------------
+    def _on_source_changed(self, index: int) -> None:
+        if index == 2 and self.playback is None:
+            self.open_recording()
+
+    def open_recording(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open recording", "recordings",
+            "Recordings (*.npz *.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            rec = load_recording(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Open Recording", f"Failed to load file:\n{exc}")
+            return
+
+        self.playback = rec
+        self.cfg.channels = self._channels_from_labels(rec.channels)
+        self.sidebar.channel_table.load(self.cfg.channels)
+        self.sidebar.source_box.setCurrentIndex(2)
+        self.sidebar.fs_box.setCurrentText(f"{rec.fs:g}")
+        self.sidebar.file_label.setText(
+            f"{Path(rec.path).name} — {len(rec.channels)} ch · "
+            f"{rec.fs:g} Hz · {rec.duration:.1f} s")
+        self.statusBar().showMessage(
+            f"Recording loaded: {Path(rec.path).name} ({rec.duration:.1f} s) — press Start Streaming to replay")
+
+    @staticmethod
+    def _channels_from_labels(labels: list[str]) -> list[ChannelConfig]:
+        """Rebuild channel geometry from recorded labels like 'S3_Z'."""
+        import re
+
+        out: list[ChannelConfig] = []
+        n_points = max(1, len(labels) // 2)
+        for i, label in enumerate(labels):
+            m = re.match(r"^S(\d+)[_-]?([XYZ])$", label.strip(), re.IGNORECASE)
+            point = int(m.group(1)) if m else i // 2 + 1
+            direction = m.group(2).upper() if m else ("X" if i % 2 == 0 else "Z")
+            out.append(ChannelConfig(
+                physical_channel=f"file/ch{i}", label=label, enabled=True,
+                point=point, direction=direction,
+                position=point / max(n_points, point),
+                sensitivity_mv_g=100.0, is_reference=(i == 0)))
+        return out
+
     # ------------------------------------------------------------------
     def start_streaming(self) -> None:
         self.sidebar.apply_to_config(self.cfg)
+        is_playback = self.sidebar.source_box.currentIndex() == 2
+
+        if is_playback:
+            if self.playback is None:
+                self.open_recording()
+                if self.playback is None:
+                    return
+            # Sample rate always comes from the file.
+            self.cfg.acquisition.sample_rate = self.playback.fs
+            self.sidebar.fs_box.setCurrentText(f"{self.playback.fs:g}")
+
         enabled = self.cfg.enabled_channels()
         if not enabled:
             QMessageBox.warning(self, "Channels", "Enable at least one channel.")
             return
 
+        backend = None
+        if is_playback:
+            rows = [i for i, c in enumerate(self.cfg.channels) if c.enabled]
+            if max(rows) >= self.playback.data.shape[0]:
+                QMessageBox.warning(self, "Playback",
+                                    "Channel table no longer matches the loaded file — reloading it.")
+                self.cfg.channels = self._channels_from_labels(self.playback.channels)
+                self.sidebar.channel_table.load(self.cfg.channels)
+                return
+            backend = PlaybackBackend(self.playback, self.cfg.acquisition.chunk_size,
+                                      channel_rows=rows)
+
         try:
-            self.engine = AcquisitionEngine(enabled, self.cfg.acquisition)
+            self.engine = AcquisitionEngine(enabled, self.cfg.acquisition, backend=backend)
             self.engine.start()
         except Exception as exc:
             self.engine = None
@@ -188,7 +263,8 @@ class MainWindow(QMainWindow):
         self._read_mark = 0
         self._t_start = time.perf_counter()
         self.sidebar.set_running(True)
-        mode = "Simulation" if self.cfg.acquisition.simulate else "Hardware"
+        mode = ("Playback" if is_playback
+                else "Simulation" if self.cfg.acquisition.simulate else "Hardware")
         self.statusBar().showMessage(
             f"Streaming {len(enabled)} ch @ {self.cfg.acquisition.sample_rate:.0f} Hz ({mode})")
         self.timer.start()
@@ -252,7 +328,13 @@ class MainWindow(QMainWindow):
         fs = engine.fs
         total = engine.ring.total
         elapsed = time.perf_counter() - self._t_start
-        self.sidebar.set_stat("State", "● Streaming" + ("  [REC]" if self.recorder.recording else ""))
+        if isinstance(engine.backend, PlaybackBackend):
+            pb = engine.backend
+            pct = 100.0 * pb.position / max(1, pb.n)
+            state = f"▶ Playback {pct:.0f}%" + (f" (loop {pb.loops + 1})" if pb.loops else "")
+        else:
+            state = "● Streaming"
+        self.sidebar.set_stat("State", state + ("  [REC]" if self.recorder.recording else ""))
         self.sidebar.set_stat("Samples/ch", f"{total:,}")
         self.sidebar.set_stat("Elapsed", f"{elapsed:.1f} s")
         self.sidebar.set_stat("Buffer", f"{min(100, 100*total/engine.ring.capacity):.0f} %")

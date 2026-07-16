@@ -121,6 +121,7 @@ class Sidebar(QWidget):
     default_requested = Signal()
     save_config = Signal()
     load_config = Signal()
+    open_file_requested = Signal()
 
     SAMPLE_RATES = ["1652", "2048", "4096", "8192", "10240", "12800", "25600", "51200"]
     FFT_SIZES = ["1024", "2048", "4096", "8192", "16384", "32768"]
@@ -144,7 +145,7 @@ class Sidebar(QWidget):
         grid = QGridLayout()
         grid.setVerticalSpacing(6)
         self.source_box = QComboBox()
-        self.source_box.addItems(["Hardware (NI-DAQmx)", "Simulation"])
+        self.source_box.addItems(["Hardware (NI-DAQmx)", "Simulation", "File playback"])
         self.coupling_box = QComboBox()
         self.coupling_box.addItems(["IEPE accelerometer", "Voltage"])
         self.fs_box = QComboBox()
@@ -162,7 +163,14 @@ class Sidebar(QWidget):
         grid.addWidget(self.fs_box, 2, 1)
         grid.addWidget(QLabel("Chunk size"), 3, 0)
         grid.addWidget(self.chunk_spin, 3, 1)
+        self.open_file_btn = QPushButton("Open Recording…")
+        grid.addWidget(QLabel("File"), 4, 0)
+        grid.addWidget(self.open_file_btn, 4, 1)
         acq.addLayout(grid)
+        self.file_label = QLabel("no recording loaded")
+        self.file_label.setObjectName("DeviceInfo")
+        self.file_label.setWordWrap(True)
+        acq.addWidget(self.file_label)
 
         self.start_btn = QPushButton("▶  Start Streaming")
         self.start_btn.setObjectName("Primary")
@@ -277,6 +285,7 @@ class Sidebar(QWidget):
         self.default_btn.clicked.connect(self.default_requested)
         self.save_btn.clicked.connect(self.save_config)
         self.loadcfg_btn.clicked.connect(self.load_config)
+        self.open_file_btn.clicked.connect(self.open_file_requested)
         self.channel_table.changed.connect(self.channels_changed)
         for w in (self.fft_box, self.window_box, self.avg_box):
             w.currentTextChanged.connect(lambda *_: self.analysis_changed.emit())
@@ -298,7 +307,8 @@ class Sidebar(QWidget):
         self.start_btn.setVisible(not running)
         self.stop_btn.setVisible(running)
         for w in (self.source_box, self.coupling_box, self.fs_box, self.chunk_spin,
-                  self.detect_btn, self.default_btn, self.channel_table):
+                  self.detect_btn, self.default_btn, self.channel_table,
+                  self.open_file_btn):
             w.setEnabled(not running)
 
     def set_stat(self, key: str, value: str) -> None:
