@@ -217,11 +217,15 @@ class Sidebar(QWidget):
         # -- channels card -----------------------------------------------
         ch_card, chl = make_card("Channels  (18 ch map)")
         btn_row = QHBoxLayout()
-        self.detect_btn = QPushButton("Detect HW")
+        self.detect_btn = QPushButton("⟲  Connect DAQ")
         self.default_btn = QPushButton("Default 18ch")
         btn_row.addWidget(self.detect_btn)
         btn_row.addWidget(self.default_btn)
         chl.addLayout(btn_row)
+        self.device_label = QLabel("No device — press Connect DAQ")
+        self.device_label.setObjectName("DeviceInfo")
+        self.device_label.setWordWrap(True)
+        chl.addWidget(self.device_label)
         self.channel_table = ChannelTable()
         chl.addWidget(self.channel_table)
 
@@ -300,6 +304,12 @@ class Sidebar(QWidget):
     def set_stat(self, key: str, value: str) -> None:
         if key in self._stat_labels:
             self._stat_labels[key].setText(value)
+
+    def set_device_info(self, text: str, connected: bool = False) -> None:
+        self.device_label.setText(text)
+        self.device_label.setProperty("connected", connected)
+        self.device_label.style().unpolish(self.device_label)
+        self.device_label.style().polish(self.device_label)
 
     # -- config sync ------------------------------------------------------
     def apply_to_config(self, cfg: AppConfig) -> None:

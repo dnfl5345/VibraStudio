@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QMainWindow, QMessageBox, QTabWidget, QWidget,
 )
 
 from .. import __app_name__, __version__
 from ..config import AppConfig, channels_from_detected, default_channel_template
-from ..daq.engine import AcquisitionEngine, discover_ai_channels
+from ..daq.engine import AcquisitionEngine, ConnectResult, auto_connect
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
@@ -28,6 +29,8 @@ GUI_TICK_MS = 60
 
 
 class MainWindow(QMainWindow):
+    _connect_finished = Signal(object, bool)  # (ConnectResult, was_auto)
+
     def __init__(self, cfg: AppConfig) -> None:
         super().__init__()
         self.cfg = cfg
@@ -87,15 +90,16 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(GUI_TICK_MS)
         self.timer.timeout.connect(self.on_tick)
 
-        # Populate channel table (auto-detect hardware if present).
+        self._connect_finished.connect(self._on_connect_finished)
+        self._connecting = False
+
+        # Populate the table immediately, then look for hardware in the
+        # background (network chassis reservation can take a few seconds).
         if not cfg.channels:
-            detected = discover_ai_channels()
-            if detected:
-                cfg.channels = channels_from_detected(detected)
-            else:
-                cfg.channels = default_channel_template()
-                self.sidebar.source_box.setCurrentIndex(1)  # simulation
+            cfg.channels = default_channel_template()
         self.sidebar.load_from_config(cfg)
+        if not cfg.acquisition.simulate:
+            QTimer.singleShot(300, lambda: self.detect_hardware(auto=True))
 
     # ------------------------------------------------------------------
     def refresh_channel_dependent_ui(self) -> None:
@@ -107,15 +111,53 @@ class MainWindow(QMainWindow):
             view.set_channels(labels)
         self.view_ods.set_channel_configs(enabled)
 
-    def detect_hardware(self) -> None:
-        detected = discover_ai_channels()
-        if not detected:
-            QMessageBox.warning(self, "Detect", "No NI-DAQmx AI channels found.\n"
-                                "Check NI MAX / device power, or use Simulation mode.")
+    # -- device auto-connect ---------------------------------------------
+    def detect_hardware(self, auto: bool = False) -> None:
+        """Scan for DAQ hardware; reserve network chassis if needed (async)."""
+        if self._connecting:
             return
-        self.cfg.channels = channels_from_detected(detected)
-        self.sidebar.channel_table.load(self.cfg.channels)
-        self.statusBar().showMessage(f"Detected {len(detected)} AI channels — mapped first {len(self.cfg.channels)}")
+        self._connecting = True
+        self.sidebar.detect_btn.setEnabled(False)
+        self.sidebar.set_device_info("Connecting… scanning NI-DAQmx devices")
+        self.statusBar().showMessage("Connecting to DAQ hardware…")
+
+        def worker() -> None:
+            try:
+                result = auto_connect(reserve=True, prefer_iepe=True)
+            except Exception as exc:  # defensive: never kill the GUI thread
+                result = ConnectResult(messages=[f"auto-connect crashed: {exc}"])
+            self._connect_finished.emit(result, auto)
+
+        threading.Thread(target=worker, daemon=True, name="daq-connect").start()
+
+    def _on_connect_finished(self, res: ConnectResult, was_auto: bool) -> None:
+        self._connecting = False
+        self.sidebar.detect_btn.setEnabled(True)
+
+        if not res.ok:
+            self.sidebar.set_device_info(res.summary(), connected=False)
+            if was_auto:
+                # Silent fallback at startup: keep the app usable without HW.
+                self.sidebar.source_box.setCurrentIndex(1)
+                self.statusBar().showMessage(
+                    "No DAQ hardware found — Simulation mode (press Connect DAQ to retry)")
+            else:
+                QMessageBox.warning(
+                    self, "Connect DAQ",
+                    "No NI-DAQmx AI channels found.\n\n"
+                    + "\n".join(res.messages[-3:] or ["Check device power / Ethernet link."])
+                    + "\n\nYou can keep working in Simulation mode.")
+            return
+
+        # Success: map channels and switch to hardware source (idle only).
+        if self.engine is None or not self.engine.running:
+            self.cfg.channels = channels_from_detected(res.channels)
+            self.sidebar.channel_table.load(self.cfg.channels)
+            self.sidebar.source_box.setCurrentIndex(0)
+        self.sidebar.set_device_info(res.summary(), connected=True)
+        note = " · chassis reserved" if res.reserved else ""
+        self.statusBar().showMessage(
+            f"DAQ connected: {len(res.channels)} AI channels mapped{note}")
 
     def load_default_channels(self) -> None:
         self.cfg.channels = default_channel_template()

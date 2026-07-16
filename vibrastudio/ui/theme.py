@@ -90,6 +90,14 @@ QLabel#StatValue {{
     font-size: 13px;
     font-weight: 600;
 }}
+QLabel#DeviceInfo {{
+    color: {TEXT_MUTED};
+    font-size: 11px;
+    padding: 2px 2px 4px 2px;
+}}
+QLabel#DeviceInfo[connected="true"] {{
+    color: {GREEN};
+}}
 QPushButton {{
     background-color: {SURFACE};
     color: {TEXT};
