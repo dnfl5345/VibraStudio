@@ -21,6 +21,7 @@ from ..daq.playback import PlaybackBackend, RecordingData, load_recording
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
+from .impact_view import ImpactView
 from .ods_view import OdsView
 from .panels import Sidebar
 from .views import (
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         self.view_env = EnvelopeView()
         self.view_frf = FrfView()
         self.view_ods = OdsView()
+        self.view_impact = ImpactView()
         self.view_metrics = MetricsView()
         self.tabs.addTab(self.view_time, "Time Series")
         self.tabs.addTab(self.view_spec, "FFT Spectrum")
@@ -64,6 +66,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.view_env, "Envelope")
         self.tabs.addTab(self.view_frf, "FRF / Coherence")
         self.tabs.addTab(self.view_ods, "ODS / Modes")
+        self.tabs.addTab(self.view_impact, "Impact Test")
         self.tabs.addTab(self.view_metrics, "Metrics")
 
         central = QWidget()
@@ -88,6 +91,8 @@ class MainWindow(QMainWindow):
         self.sidebar.open_file_requested.connect(self.open_recording)
         self.sidebar.source_box.currentIndexChanged.connect(self._on_source_changed)
         self.view_ods.channels_mapped.connect(self._on_channels_mapped)
+        self.view_impact.beam_preset_requested.connect(self.apply_beam_preset)
+        self.view_impact.mode_frequency_selected.connect(self._show_mode_in_ods)
         self.playback: RecordingData | None = None
 
         self.view_spec.reset_btn.clicked.connect(
@@ -118,6 +123,7 @@ class MainWindow(QMainWindow):
                      self.view_octave, self.view_env, self.view_frf, self.view_metrics):
             view.set_channels(labels)
         self.view_ods.set_channel_configs(enabled)
+        self.view_impact.set_channel_configs(enabled)
 
     # -- device auto-connect ---------------------------------------------
     def detect_hardware(self, auto: bool = False) -> None:
@@ -183,6 +189,31 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Channels auto-mapped onto {self.view_ods.geometry.name} "
             f"({self.view_ods.geometry.n_nodes} nodes)")
+
+    # -- impact test helpers -----------------------------------------------
+    def apply_beam_preset(self) -> None:
+        """Physical rig: 50 cm free cantilever, S1..S4 at 10/20/30/40 cm from
+        the tip (positions from the clamped base: 0.8/0.6/0.4/0.2), and the
+        9th channel used as the impact hammer."""
+        from .impact_view import FREE_LEN_CM, SENSOR_FROM_TIP_CM
+
+        for ch in self.cfg.channels:
+            if 1 <= ch.point <= len(SENSOR_FROM_TIP_CM):
+                d = SENSOR_FROM_TIP_CM[ch.point - 1]
+                ch.position = (FREE_LEN_CM - d) / FREE_LEN_CM
+        if len(self.cfg.channels) >= 9:
+            ham = self.cfg.channels[8]
+            ham.label = "HAMMER"
+            ham.enabled = True
+            ham.is_reference = False
+        self.sidebar.channel_table.load(self.cfg.channels)
+        self.statusBar().showMessage(
+            "Beam preset applied: S1..S4 at 10/20/30/40 cm from tip, ch9 = HAMMER")
+
+    def _show_mode_in_ods(self, fn: float) -> None:
+        self.view_ods.freq_spin.setValue(fn)
+        self.tabs.setCurrentWidget(self.view_ods)
+        self.statusBar().showMessage(f"ODS frequency set to {fn:.2f} Hz")
 
     # -- file playback -----------------------------------------------------
     def _on_source_changed(self, index: int) -> None:
@@ -382,6 +413,8 @@ class MainWindow(QMainWindow):
             self.view_frf.update_view(analyzer, ref)
         elif widget is self.view_ods:
             self.view_ods.update_view(analyzer)
+        elif widget is self.view_impact:
+            self.view_impact.update_view(engine)
         elif widget is self.view_metrics:
             n = int(2.0 * fs)
             self.view_metrics.update_view(engine.ring.latest(n), analyzer)

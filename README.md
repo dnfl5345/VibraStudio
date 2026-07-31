@@ -17,6 +17,7 @@ Python(PySide6 + pyqtgraph)으로 구현했습니다.
 | **Octave** | IEC 61260 1/1·1/3 옥타브 밴드 레벨 | Octave Analysis |
 | **Envelope** | 대역통과 + Hilbert 포락선 스펙트럼 (베어링 결함 진단) | Envelope Detection |
 | **FRF / Coherence** | 기준 채널 대비 H1 전달률(Transmissibility), 위상, Coherence | Frequency Response (SVXMPL) |
+| **Impact Test** | 임팩트 해머 모달 시험 — 레벨 트리거(프리트리거) 자동 캡처, Force/Exponential 윈도우, 타격 평균 **H1 FRF + Coherence**, 고유주파수·감쇠비(half-power, 지수윈도우 보정)·모드형상 자동 추출, 더블히트 자동 리젝트, 외팔보 이론 기반 **최적 타격 위치 가이드**(모드 노드 회피 표시) | Impact Test (SVMS) |
 | **ODS / Modes** | 선택 주파수에서의 운전변형형상(ODS)을 **3D 구조 위에 실시간 애니메이션** — 진폭(자기스펙트럼) + 상대위상(크로스스펙트럼), 피크 자동 탐색. 구조는 파라메트릭 템플릿(보/평판/링/원통 — 예: 12노드×2층 원통)으로 빌드하고 채널을 노드·방향(X/Y/Z)에 자동 매핑 | ODS / Modal 측정 |
 | **Metrics** | 채널별 RMS·Peak·Crest·Kurtosis·Skew·지배주파수 라이브 테이블, 충격성(베어링 손상 의심) 플래그 | Vibration Level |
 
