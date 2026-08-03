@@ -100,6 +100,8 @@ class OdsView(BaseView):
         self.map_btn = QPushButton("Auto-map Channels")
         self.labels_chk = QCheckBox("Node ids")
         self.labels_chk.setChecked(True)
+        self.fix_chk = QCheckBox("Fix base")
+        self.fix_chk.setChecked(True)
 
         # -- 3D viewport -----------------------------------------------------
         if _HAS_GL:
@@ -148,7 +150,8 @@ class OdsView(BaseView):
                                   self.p1_label, self.p1_spin,
                                   self.p2_label, self.p2_spin,
                                   self.build_btn, self.map_box, self.map_btn,
-                                  self.labels_chk, "stretch", QLabel("")))
+                                  self.fix_chk, self.labels_chk,
+                                  "stretch", QLabel("")))
         lay.addLayout(body)
 
         self._phase = 0.0
@@ -192,10 +195,12 @@ class OdsView(BaseView):
             self.geometry = build(shape, n_nodes=p1)
         else:
             self.geometry = build(shape, n_per_ring=p1, n_layers=p2)
+        n_fixed = self.geometry.fix_base() if self.fix_chk.isChecked() else 0
         self._user_geometry = True
         self._rebuild_static()
         self.info.setText(f"{self.geometry.name}: {self.geometry.n_nodes} nodes, "
-                          f"{len(self.geometry.edges)} edges")
+                          f"{len(self.geometry.edges)} edges"
+                          + (f", {n_fixed} fixed" if n_fixed else ""))
 
     def _auto_map(self) -> None:
         if not self.channel_cfgs:
@@ -289,9 +294,35 @@ class OdsView(BaseView):
             pass
 
     # -- 3D rendering --------------------------------------------------------
+    AXIS_COLORS = {"X": "#e05a5a", "Y": "#7fbf7a", "Z": "#5aa9d6"}
+
     def _sensor_nodes(self) -> set[int]:
         return {c.point - 1 for c in self.channel_cfgs
                 if 0 <= c.point - 1 < self.geometry.n_nodes}
+
+    def _draw_axes(self) -> None:
+        """Coordinate triad (X red / Y green / Z blue) beside the structure."""
+        g = self.geometry
+        if not hasattr(self, "_axis_items"):
+            self._axis_items = []
+        for item in self._axis_items:
+            self.view3d.removeItem(item)
+        self._axis_items = []
+        s = g.bbox_size()
+        origin = g.nodes.min(axis=0) - 0.18 * s if g.n_nodes else np.zeros(3)
+        length = 0.25 * s
+        for name, vec in (("X", np.array([1.0, 0, 0])),
+                          ("Y", np.array([0, 1.0, 0])),
+                          ("Z", np.array([0, 0, 1.0]))):
+            color = self.AXIS_COLORS[name]
+            line = gl.GLLinePlotItem(
+                pos=np.array([origin, origin + length * vec]),
+                color=_rgba(color, 0.95), width=2.5, antialias=True)
+            self.view3d.addItem(line)
+            label = gl.GLTextItem(pos=origin + 1.18 * length * vec, text=name,
+                                  color=pg.mkColor(color))
+            self.view3d.addItem(label)
+            self._axis_items.extend((line, label))
 
     def _rebuild_static(self) -> None:
         """Redraw undeformed wireframe, node scatter, labels and camera."""
@@ -300,6 +331,7 @@ class OdsView(BaseView):
         g = self.geometry
         self.gl_undeformed.setData(pos=g.edge_array())
         self._update_scatter(g.nodes)
+        self._draw_axes()
 
         for item in self._gl_labels:
             self.view3d.removeItem(item)
@@ -328,6 +360,10 @@ class OdsView(BaseView):
         for i in sensors:
             colors[i] = _rgba(theme.ACCENT_HOVER, 1.0)
             sizes[i] = 11.0
+        for i in g.fixed:
+            if 0 <= i < g.n_nodes:
+                colors[i] = _rgba(theme.RED, 0.9)
+                sizes[i] = 9.0
         self.gl_nodes.setData(pos=positions, color=colors, size=sizes)
 
     def _animate(self) -> None:
@@ -352,6 +388,10 @@ class OdsView(BaseView):
                 continue
             rel = self._amp[i] / global_peak
             disp[node, axis] += rel * np.cos(self._phase + self._phi[i])
+
+        for i in g.fixed:   # clamped nodes never move
+            if 0 <= i < g.n_nodes:
+                disp[i] = 0.0
 
         deformed = g.nodes + gain * disp
         self.gl_deformed.setData(pos=g.edge_array(deformed))

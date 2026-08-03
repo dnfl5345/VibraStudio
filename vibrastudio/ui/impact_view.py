@@ -70,6 +70,9 @@ class ImpactView(BaseView):
         self.arm_btn.setObjectName("Primary")
         self.arm_btn.setCheckable(True)
         self.clear_btn = QPushButton("Clear Averages")
+        self.dir_box = QComboBox()
+        self.dir_box.addItems(["All dirs", "X only", "Y only", "Z only"])
+        self.save_btn = QPushButton("💾 Save Results")
         self.status = QLabel("idle — start streaming, then Arm")
 
         # -- impact location guide (left) ---------------------------------
@@ -138,7 +141,9 @@ class ImpactView(BaseView):
                                   "Trigger", self.trig_spin, "Pre", self.pre_spin,
                                   "Length", self.len_spin, self.reject_chk,
                                   "stretch", self.preset_btn))
-        lay.addLayout(toolbar_row(self.arm_btn, self.clear_btn, "stretch", self.status))
+        lay.addLayout(toolbar_row(self.arm_btn, self.clear_btn,
+                                  "Response", self.dir_box, self.save_btn,
+                                  "stretch", self.status))
         lay.addLayout(body)
 
         self.arm_btn.toggled.connect(self._arm_toggled)
@@ -146,6 +151,11 @@ class ImpactView(BaseView):
         self.preset_btn.clicked.connect(self.beam_preset_requested)
         self.mode_table.itemSelectionChanged.connect(self._mode_selected)
         self.ods_btn.clicked.connect(self._send_to_ods)
+        self.save_btn.clicked.connect(self._save_results)
+        self.dir_box.currentIndexChanged.connect(self._dir_changed)
+        self._hit_records: list[tuple[np.ndarray, np.ndarray]] = []
+        self._sel_resp: list[tuple[int, int]] = []   # (row in acc, channel idx)
+        self._last_resp_idx: list[int] = []
 
     # -- guide -----------------------------------------------------------
     def _draw_guide(self) -> None:
@@ -216,8 +226,13 @@ class ImpactView(BaseView):
         self.hits = 0
         self.rejects = 0
         self.modes = []
+        self._hit_records = []
         self.mode_table.setRowCount(0)
         self.status.setText("averages cleared")
+
+    def _dir_changed(self, *_):
+        if self.acc is not None and self._last_resp_idx:
+            self._redraw(self._last_resp_idx, self.acc.fs)
 
     # -- per-tick processing ---------------------------------------------
     def update_view(self, engine: AcquisitionEngine) -> None:
@@ -287,8 +302,11 @@ class ImpactView(BaseView):
         if self.acc is None or self.acc.n_resp != len(resp_idx) or self.acc.nfft != cap_n:
             self.acc = ImpactAccumulator(fs=fs, n_resp=len(resp_idx), nfft=cap_n)
             self.hits = 0
+            self._hit_records = []
         self.acc.add_hit(f_seg, r_seg)
         self.hits += 1
+        if len(self._hit_records) < 32:   # keep raw captures for export
+            self._hit_records.append((f_seg.copy(), r_seg.copy()))
         self._last_force = f_seg
         self._last_resp = r_seg
         self.status.setText(
@@ -309,12 +327,21 @@ class ImpactView(BaseView):
                      max(np.max(np.abs(self._last_resp[strongest][:n_show])), 1e-12))
             self.c_resp.setData(t_ms, self._last_resp[strongest][:n_show] * scale)
 
+        self._last_resp_idx = list(resp_idx)
         h1, coh = self.acc.frf()
         freq = self.acc.freq
         f_max = min(1000.0, freq[-1])
         mask = freq <= f_max
 
-        labels = [self.channel_cfgs[i].label for i in resp_idx]
+        # Direction filter: identify modes per excitation direction so a
+        # Z-family test is not polluted by weakly excited cross-axis channels.
+        want = self.dir_box.currentText()
+        self._sel_resp = [
+            (k, ch_i) for k, ch_i in enumerate(resp_idx)
+            if want == "All dirs" or self.channel_cfgs[ch_i].direction == want[0]
+        ]
+        sel_rows = [k for k, _ in self._sel_resp]
+
         while len(self.frf_curves) < len(resp_idx):
             k = len(self.frf_curves)
             self.frf_curves.append(self.p_frf.plot(
@@ -322,17 +349,17 @@ class ImpactView(BaseView):
             self.coh_curves.append(self.p_coh.plot(
                 pen=pg.mkPen(self.color(k), width=1.0)))
         for k in range(len(self.frf_curves)):
-            if k < len(resp_idx):
+            if k < len(resp_idx) and k in sel_rows:
                 mag = np.maximum(np.abs(h1[k])[mask], 1e-12)
                 self.frf_curves[k].setData(freq[mask], mag)
                 self.coh_curves[k].setData(freq[mask], coh[k][mask])
             else:
                 self.frf_curves[k].setData([], [])
                 self.coh_curves[k].setData([], [])
-        _ = labels
 
-        # modal identification
-        self.modes = identify_modes(freq, h1, f_min=3.0, f_max=f_max,
+        # modal identification on the selected direction subset
+        h_sel = h1[sel_rows] if sel_rows else h1
+        self.modes = identify_modes(freq, h_sel, f_min=3.0, f_max=f_max,
                                     exp_tau_sec=self.acc.exp_tau_sec)
         for ln in self.mode_lines:
             self.p_frf.removeItem(ln)
@@ -357,15 +384,13 @@ class ImpactView(BaseView):
         if not (0 <= r < len(self.modes)) or self.acc is None:
             return
         shape = self.modes[r]["shape"]
-        ham = self.hammer_box.currentIndex()
-        resp_idx = [i for i in range(len(self.channel_cfgs)) if i != ham]
         for direction, curve in (("X", self.shape_x), ("Z", self.shape_z)):
             pts = []
-            for k, ch_i in enumerate(resp_idx):
+            for j, (_, ch_i) in enumerate(self._sel_resp):
                 c = self.channel_cfgs[ch_i]
-                if c.direction == direction and k < shape.size:
+                if c.direction == direction and j < shape.size:
                     d_tip = FREE_LEN_CM * (1.0 - c.position)
-                    pts.append((d_tip, float(shape[k])))
+                    pts.append((d_tip, float(shape[j])))
             pts.sort()
             if pts:
                 curve.setData([p[1] for p in pts], [p[0] for p in pts])
@@ -376,3 +401,74 @@ class ImpactView(BaseView):
         r = self.mode_table.currentRow()
         if 0 <= r < len(self.modes):
             self.mode_frequency_selected.emit(self.modes[r]["fn"])
+
+    # -- export ------------------------------------------------------------
+    def _save_results(self) -> None:
+        """Write FRF/coherence, mode table, raw hits and a screenshot."""
+        if self.acc is None or self.acc.navg == 0:
+            self.status.setText("nothing to save — capture at least one hit")
+            return
+        import csv
+        import json
+        from datetime import datetime
+        from pathlib import Path
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = Path("outputs") / f"impact_{ts}"
+        out.mkdir(parents=True, exist_ok=True)
+
+        resp_idx = self._last_resp_idx
+        labels = [self.channel_cfgs[i].label for i in resp_idx]
+        h1, coh = self.acc.frf()
+        freq = self.acc.freq
+
+        with (out / "frf.csv").open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            header = ["freq_hz"]
+            for lbl in labels:
+                header += [f"H_mag_gN_{lbl}", f"H_phase_deg_{lbl}", f"coherence_{lbl}"]
+            w.writerow(header)
+            for i in range(freq.size):
+                row = [f"{freq[i]:.6f}"]
+                for k in range(len(labels)):
+                    row += [f"{abs(h1[k, i]):.6e}",
+                            f"{np.degrees(np.angle(h1[k, i])):.3f}",
+                            f"{coh[k, i]:.5f}"]
+                w.writerow(row)
+
+        with (out / "modes.csv").open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            sel_labels = [self.channel_cfgs[ch_i].label for _, ch_i in self._sel_resp]
+            w.writerow(["mode", "fn_hz", "zeta_pct", "H_amp",
+                        *[f"shape_{l}" for l in sel_labels]])
+            for m_i, md in enumerate(self.modes, start=1):
+                w.writerow([m_i, f"{md['fn']:.4f}", f"{100*md['zeta']:.4f}",
+                            f"{md['amp']:.6e}",
+                            *[f"{v:.5f}" for v in md["shape"]]])
+
+        if self._hit_records:
+            np.savez_compressed(
+                out / "raw_hits.npz",
+                force_n=np.stack([h[0] for h in self._hit_records]),
+                response_g=np.stack([h[1] for h in self._hit_records]),
+                fs=self.acc.fs, response_labels=np.array(labels),
+            )
+
+        meta = {
+            "timestamp": ts,
+            "hits_accepted": self.hits, "hits_rejected": self.rejects,
+            "hammer_channel": self.hammer_box.currentText(),
+            "hammer_sens_mv_n": self.hammer_sens.value(),
+            "trigger_n": self.trig_spin.value(),
+            "pretrigger_ms": self.pre_spin.value(),
+            "capture_s": self.len_spin.value(),
+            "response_filter": self.dir_box.currentText(),
+            "sample_rate_hz": self.acc.fs,
+            "modes": [{"fn_hz": m["fn"], "zeta_pct": 100 * m["zeta"]}
+                      for m in self.modes],
+        }
+        (out / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+        win = self.window()
+        win.grab().save(str(out / "screenshot.png"))
+        self.status.setText(f"saved → {out}  (frf/modes/raw_hits/screenshot)")

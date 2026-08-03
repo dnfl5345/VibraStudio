@@ -24,6 +24,7 @@ class Geometry:
     nodes: np.ndarray                      # (n, 3) float64
     edges: list[tuple[int, int]]           # 0-based node index pairs
     params: dict = field(default_factory=dict)
+    fixed: list[int] = field(default_factory=list)   # clamped node indices (0-based)
 
     @property
     def n_nodes(self) -> int:
@@ -43,12 +44,24 @@ class Geometry:
         idx = np.asarray(self.edges, dtype=int).reshape(-1)
         return pts[idx]
 
+    def fix_base(self, tol_fraction: float = 0.05) -> int:
+        """Mark the lowest nodes (along Z) as clamped. Planar shapes are
+        left free — with every node at z=0 there is no meaningful base."""
+        z = self.nodes[:, 2]
+        span = float(np.ptp(z))
+        if span < 1e-9:
+            self.fixed = []
+            return 0
+        self.fixed = [int(i) for i in np.nonzero(z <= z.min() + tol_fraction * span)[0]]
+        return len(self.fixed)
+
     def to_dict(self) -> dict:
         return {
             "name": self.name,
             "nodes": self.nodes.tolist(),
             "edges": [list(e) for e in self.edges],
             "params": self.params,
+            "fixed": [int(i) for i in self.fixed],
         }
 
     @classmethod
@@ -58,6 +71,7 @@ class Geometry:
             nodes=np.asarray(d.get("nodes", []), dtype=float).reshape(-1, 3),
             edges=[tuple(int(i) for i in e) for e in d.get("edges", [])],
             params=dict(d.get("params", {})),
+            fixed=[int(i) for i in d.get("fixed", [])],
         )
 
 

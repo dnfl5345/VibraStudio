@@ -194,21 +194,43 @@ class MainWindow(QMainWindow):
     def apply_beam_preset(self) -> None:
         """Physical rig: 50 cm free cantilever, S1..S4 at 10/20/30/40 cm from
         the tip (positions from the clamped base: 0.8/0.6/0.4/0.2), and the
-        9th channel used as the impact hammer."""
+        9th channel used as the impact hammer.
+
+        Also builds the matching ODS geometry: base(fixed) - S4..S1 - tip,
+        node ids 1..6 bottom-up, so the 3D deflection animation uses the
+        true sensor heights and a clamped base."""
+        import numpy as np
+
+        from ..geometry import Geometry
         from .impact_view import FREE_LEN_CM, SENSOR_FROM_TIP_CM
 
+        # sensor point -> beam node (bottom-up: 1=base, 2=S4 ... 5=S1, 6=tip)
+        point_to_node = {1: 5, 2: 4, 3: 3, 4: 2}
         for ch in self.cfg.channels:
             if 1 <= ch.point <= len(SENSOR_FROM_TIP_CM):
                 d = SENSOR_FROM_TIP_CM[ch.point - 1]
                 ch.position = (FREE_LEN_CM - d) / FREE_LEN_CM
+                ch.point = point_to_node.get(ch.point, ch.point)
         if len(self.cfg.channels) >= 9:
             ham = self.cfg.channels[8]
             ham.label = "HAMMER"
             ham.enabled = True
             ham.is_reference = False
+            ham.point = 6            # free tip (hit location)
+            ham.position = 1.0
         self.sidebar.channel_table.load(self.cfg.channels)
+
+        heights = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        nodes = np.array([[0.0, 0.0, z] for z in heights])
+        geo = Geometry("beam-rig", nodes, [(i, i + 1) for i in range(5)],
+                       {"shape": "beam-rig", "free_len_cm": FREE_LEN_CM},
+                       fixed=[0])
+        self.view_ods.geometry = geo
+        self.view_ods._user_geometry = True
+        self.view_ods._rebuild_static()
         self.statusBar().showMessage(
-            "Beam preset applied: S1..S4 at 10/20/30/40 cm from tip, ch9 = HAMMER")
+            "Beam preset: S1..S4 at 10/20/30/40 cm from tip (nodes 5..2), "
+            "base fixed, ch9 = HAMMER at tip")
 
     def _show_mode_in_ods(self, fn: float) -> None:
         self.view_ods.freq_spin.setValue(fn)
