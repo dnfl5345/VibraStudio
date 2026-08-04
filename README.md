@@ -73,9 +73,10 @@ ODS 뷰와 같은 원통(cylinder) 노드-링크 구조 위에 3차원 ODS를 �
 애니메이션(GIF/MP4)으로 내보내는 헤드리스 도구입니다.
 
 ```bash
-python tools/ods_from_motion_vectors.py --demo                 # 대표 합성 데이터
-python tools/ods_from_motion_vectors.py --video machine.mp4    # 영상 → optical flow
-python tools/ods_from_motion_vectors.py --npz vectors.npz      # 장비 내보내기 데이터
+python tools/ods_from_motion_vectors.py --demo                    # 회전기기(원통)
+python tools/ods_from_motion_vectors.py --demo --structure deck   # 교량 상판(grid)
+python tools/ods_from_motion_vectors.py --video machine.mp4       # 영상 → optical flow
+python tools/ods_from_motion_vectors.py --npz vectors.npz         # 장비 내보내기 데이터
 ```
 
 측정점별 FFT로 지배 주파수의 복소 진폭·위상을 뽑고(spectral ODS), 축방향
@@ -83,7 +84,12 @@ python tools/ods_from_motion_vectors.py --npz vectors.npz      # 장비 내보�
 원통 노드에 전개합니다. 단일 카메라 시점이라 화면 수직(Y) 병진 성분은 관측
 불가하며 0으로 둡니다. 결과 예시: [docs/ods_restoration/](docs/ods_restoration/)
 
+교량(`--structure deck`)은 grid 템플릿 위에 스테이션별 수직 굽힘 dZ·종방향
+dX·단면 회전 θ를 적합하며, 독립 적합된 θ가 보 이론의 d(dZ)/dx를 따라가는지가
+복원의 내부 일관성 지표가 됩니다(데모 r=0.993).
+
 ![ODS restoration](docs/ods_restoration/ods_cylinder_restoration.gif)
+![Bridge deck ODS restoration](docs/ods_restoration/ods_deck_restoration.gif)
 
 ## 아키텍처
 

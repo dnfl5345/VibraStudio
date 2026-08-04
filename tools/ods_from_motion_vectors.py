@@ -41,7 +41,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vibrastudio.geometry import Geometry, make_cylinder  # noqa: E402
+from vibrastudio.geometry import Geometry, make_cylinder, make_grid  # noqa: E402
 
 # Repo dark-theme palette (vibrastudio.ui.theme)
 BG = "#1f1e1c"
@@ -157,6 +157,40 @@ class MotionVectors:
         v += 0.04 * rng.standard_normal(v.shape)
         return cls(pts, u, v, fps)
 
+    @classmethod
+    def demo_bridge(cls, fps: float = 60.0, n_frames: int = 2048,
+                    f1: float = 2.2, seed: int = 11) -> "MotionVectors":
+        """Synthetic vectors representative of a bridge span, side view.
+
+        Traffic/wind-driven first vertical bending of the deck: half-sine
+        shape between the abutments at ~2 Hz, a weaker second bending
+        harmonic, and the section rotation that Euler beam theory couples
+        to bending (theta = dw/dx), visible as longitudinal motion that
+        varies linearly over the girder depth. Ends are supported.
+        """
+        rng = np.random.default_rng(seed)
+        nx_, ny_ = 30, 6
+        xs = np.linspace(0.0, 1.0, nx_)              # along the span
+        ys = np.linspace(-0.5, 0.5, ny_)             # over the girder depth
+        pts = np.array([(x, y) for y in ys for x in xs])
+        t = np.arange(n_frames) / fps
+        w1 = 2 * np.pi * f1
+        x, y = pts[:, 0], pts[:, 1]
+
+        # mode 1 (half-sine) + mode 2, standing waves
+        w_shape = np.sin(np.pi * x)
+        w2_shape = 0.22 * np.sin(2 * np.pi * x)
+        # section rotation theta = dw/dx (per unit span), scaled by depth
+        th_shape = np.pi * np.cos(np.pi * x)
+        depth = 0.12                                  # girder depth / span
+        v = (w_shape[None, :] * np.sin(w1 * t[:, None])
+             + w2_shape[None, :] * np.sin(1.9 * w1 * t[:, None] + 0.7))
+        u = (depth * y[None, :] * th_shape[None, :] * np.sin(w1 * t[:, None])
+             + 0.05 * np.sin(w1 * t[:, None] + 0.3))
+        u += 0.03 * rng.standard_normal(u.shape)
+        v += 0.03 * rng.standard_normal(v.shape)
+        return cls(pts, u, v, fps)
+
 
 # ---------------------------------------------------------------------------
 # 2. Spectral ODS at the dominant frequency
@@ -257,13 +291,80 @@ def restore_cylinder_ods(mv: MotionVectors, Uk: np.ndarray, Vk: np.ndarray,
     return geom, disp, rings
 
 
+def restore_deck_ods(mv: MotionVectors, Uk: np.ndarray, Vk: np.ndarray,
+                     n_stations: int = 16, n_width: int = 5,
+                     span: float = 3.4, width: float = 0.7):
+    """Restore a bridge-deck ODS on the grid (plate) node-link template.
+
+    Side-view projection equations per axial station:
+        v(y) = dZ                    (vertical bending translation)
+        u(y) = dX + theta * y        (longitudinal + section rotation)
+    theta is fit independently from the depth-wise gradient of u; Euler
+    beam theory predicts theta ~ d(dZ)/dx, so agreement between the two
+    is an internal consistency check of the restoration idea. The deck
+    roll (torsion across the width) is unobservable from a side view and
+    left at zero. End stations are marked as supports and clamped.
+
+    Returns (geometry, disp, stations) with stations holding dX/dZ/theta
+    plus the beam-theory cross-check series.
+    """
+    geom = make_grid(nx=n_stations, ny=n_width, width=span, depth=width)
+    # deck spans X: supports at both abutments (first/last column of nodes)
+    geom.fixed = [j * n_stations + i for j in range(n_width)
+                  for i in (0, n_stations - 1)]
+
+    px, py = mv.points[:, 0], mv.points[:, 1]
+    x01 = (px - px.min()) / max(np.ptp(px), 1e-12)
+    yc = py - py.mean()
+    yc = yc / max(np.abs(yc).max(), 1e-12)           # depth coordinate [-1,1]
+
+    edges_x = np.linspace(0, 1, n_stations + 1)
+    station = np.clip(np.digitize(x01, edges_x[1:-1]), 0, n_stations - 1)
+
+    dX = np.zeros(n_stations, complex)
+    dZ = np.zeros(n_stations, complex)
+    th = np.zeros(n_stations, complex)
+    filled = np.zeros(n_stations, bool)
+    for j in range(n_stations):
+        m = station == j
+        if m.sum() < 3:
+            continue
+        dZ[j] = Vk[m].mean()
+        A = np.column_stack([np.ones(m.sum()), yc[m]])
+        coef, *_ = np.linalg.lstsq(A, Uk[m], rcond=None)
+        dX[j], th[j] = coef
+        filled[j] = True
+    if not filled.all():
+        idx = np.arange(n_stations)
+        for arr in (dX, dZ, th):
+            arr[~filled] = np.interp(idx[~filled], idx[filled],
+                                     arr[filled].real) + 1j * np.interp(
+                idx[~filled], idx[filled], arr[filled].imag)
+
+    disp = np.zeros((geom.n_nodes, 3), complex)
+    for j in range(n_width):
+        for i in range(n_stations):
+            k = j * n_stations + i
+            disp[k, 0] = dX[i]
+            disp[k, 2] = dZ[i]
+    for k in geom.fixed:
+        disp[k] = 0.0
+
+    # beam-theory cross-check: theta should track d(dZ)/dx along the span
+    dz_dx = np.gradient(dZ, 1.0 / max(n_stations - 1, 1))
+    stations = {"dX": dX, "dZ": dZ, "theta": th, "dz_dx": dz_dx}
+    return geom, disp, stations
+
+
 # ---------------------------------------------------------------------------
 # 4. Rendering
 # ---------------------------------------------------------------------------
 def render_animation(geom: Geometry, disp: np.ndarray, f0: float,
                      out_gif: Path, out_mp4: Path | None = None,
                      n_frames: int = 48, cycles: int = 2, fps_out: int = 24,
-                     gain_frac: float = 0.16):
+                     gain_frac: float = 0.16, title: str | None = None,
+                     view: tuple[float, float] = (18, -58),
+                     aspect: tuple[float, float, float] = (1.35, 1, 1)):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -300,10 +401,13 @@ def render_animation(geom: Geometry, disp: np.ndarray, f0: float,
         ax.set_xlim(c[0] - 0.62 * s, c[0] + 0.62 * s)
         ax.set_ylim(c[1] - 0.45 * s, c[1] + 0.45 * s)
         ax.set_zlim(c[2] - 0.45 * s, c[2] + 0.45 * s)
-        ax.set_box_aspect((1.35, 1, 1))
-        ax.view_init(elev=18, azim=-58)
-        ax.set_title(f"3D ODS restoration — cylinder {geom.params.get('n_per_ring')}"
-                     f"x{geom.params.get('n_layers')} @ {f0:.2f} Hz",
+        ax.set_box_aspect(aspect)
+        ax.view_init(elev=view[0], azim=view[1])
+        if geom.fixed:
+            fx = nodes[geom.fixed]
+            ax.scatter(fx[:, 0], fx[:, 1], fx[:, 2], c="#e05a5a", s=26,
+                       depthshade=False, marker="s")
+        ax.set_title(title or f"3D ODS restoration — {geom.name} @ {f0:.2f} Hz",
                      color=TEXT, fontsize=10)
         fig.canvas.draw()
         img = np.asarray(fig.canvas.buffer_rgba())[..., :3]
@@ -367,6 +471,58 @@ def render_summary(mv: MotionVectors, spec, f0, Uk, Vk, rings, out_png: Path):
     plt.close(fig)
 
 
+def render_summary_deck(mv: MotionVectors, spec, f0, Uk, Vk, st, out_png: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    f, s = spec
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.8), facecolor=BG)
+    for a in axes:
+        a.set_facecolor(BG)
+        for sp in a.spines.values():
+            sp.set_color(FAINT)
+        a.tick_params(colors=TEXT, labelsize=8)
+
+    ax = axes[0]
+    amp = np.hypot(np.abs(Uk), np.abs(Vk))
+    q = ax.quiver(mv.points[:, 0], mv.points[:, 1], Uk.real, Vk.real,
+                  amp, cmap="plasma", scale=25, width=3e-3)
+    ax.set_title(f"motion vectors @ {f0:.2f} Hz (Re)", color=TEXT, fontsize=9)
+    ax.set_aspect("auto")
+    fig.colorbar(q, ax=ax).ax.tick_params(colors=TEXT, labelsize=7)
+
+    ax = axes[1]
+    ax.semilogy(f, s + 1e-12, color=ACCENT, lw=1.2)
+    ax.axvline(f0, color="#5aa9d6", ls="--", lw=1)
+    ax.set_xlim(0, min(f.max(), 5 * f0))
+    ax.set_title(f"avg motion spectrum — peak {f0:.2f} Hz", color=TEXT, fontsize=9)
+    ax.set_xlabel("Hz", color=TEXT, fontsize=8)
+
+    ax = axes[2]
+    n = len(st["dZ"])
+    xs = np.arange(n) + 1
+    ax.plot(xs, np.abs(st["dZ"]), "o-", color=ACCENT, label="|dZ| bending")
+    ax.plot(xs, np.abs(st["dX"]), "s-", color="#5aa9d6", label="|dX| longitudinal")
+    # beam-theory consistency: fitted rotation vs derivative of bending
+    th, dz = st["theta"], st["dz_dx"]
+    k = (np.vdot(th, dz) / max(np.vdot(th, th).real, 1e-12)).real
+    r = np.corrcoef(np.abs(th), np.abs(dz))[0, 1]
+    ax.plot(xs, np.abs(th) * abs(k), "^-", color="#a3c95a",
+            label=f"|theta|·k (fit rotation)")
+    ax.plot(xs, np.abs(dz), ":", color=TEXT, lw=1.4,
+            label="|d(dZ)/dx| (beam theory)")
+    ax.set_title(f"per-station restore — theta vs d(dZ)/dx: r={r:.3f}",
+                 color=TEXT, fontsize=9)
+    ax.set_xlabel("station (abutment -> abutment)", color=TEXT, fontsize=8)
+    ax.legend(fontsize=7, facecolor=BG, labelcolor=TEXT, edgecolor=FAINT)
+
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=110, facecolor=BG)
+    plt.close(fig)
+    return r
+
+
 # ---------------------------------------------------------------------------
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -374,17 +530,26 @@ def main(argv=None) -> int:
     src.add_argument("--video", help="video file to extract motion vectors from")
     src.add_argument("--npz", help="exported vectors: points,u,v,fps")
     src.add_argument("--demo", action="store_true",
-                     help="synthetic rotating-machine motion vectors")
+                     help="synthetic motion vectors for the chosen structure")
+    ap.add_argument("--structure", choices=["cylinder", "deck"],
+                    default="cylinder",
+                    help="restoration target: rotating-machine cylinder or "
+                         "bridge deck (grid template)")
     ap.add_argument("--freq", type=float, default=None,
                     help="analysis frequency in Hz (default: dominant peak)")
     ap.add_argument("--nodes-per-ring", type=int, default=12)
     ap.add_argument("--layers", type=int, default=6)
+    ap.add_argument("--stations", type=int, default=16,
+                    help="deck: stations along the span")
+    ap.add_argument("--width-nodes", type=int, default=5,
+                    help="deck: nodes across the width")
     ap.add_argument("--out", default="docs/ods_restoration",
                     help="output directory")
     args = ap.parse_args(argv)
 
     if args.demo:
-        mv = MotionVectors.demo()
+        mv = (MotionVectors.demo_bridge() if args.structure == "deck"
+              else MotionVectors.demo())
     elif args.npz:
         mv = MotionVectors.from_npz(args.npz)
     else:
@@ -396,20 +561,38 @@ def main(argv=None) -> int:
     print(f"[2] spectral ODS: dominant frequency {f0:.3f} Hz, "
           f"max |v| {np.abs(Vk).max():.3f}")
 
-    geom, disp, rings = restore_cylinder_ods(
-        mv, Uk, Vk, n_per_ring=args.nodes_per_ring, n_layers=args.layers)
-    print(f"[3] restored on cylinder: {geom.n_nodes} nodes, "
-          f"{len(geom.edges)} edges "
-          f"({args.nodes_per_ring}/ring x {args.layers} rings)")
-
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    gif, mp4 = render_animation(geom, disp, f0,
-                                out / "ods_cylinder_restoration.gif",
-                                out / "ods_cylinder_restoration.mp4")
-    render_summary(mv, spec, f0, Uk, Vk, rings, out / "ods_restoration_summary.png")
+    if args.structure == "deck":
+        geom, disp, st = restore_deck_ods(
+            mv, Uk, Vk, n_stations=args.stations, n_width=args.width_nodes)
+        print(f"[3] restored on deck grid: {geom.n_nodes} nodes, "
+              f"{len(geom.edges)} edges ({args.stations} stations x "
+              f"{args.width_nodes} width, {len(geom.fixed)} supported)")
+        stem = "ods_deck_restoration"
+        gif, mp4 = render_animation(
+            geom, disp, f0, out / f"{stem}.gif", out / f"{stem}.mp4",
+            title=f"3D ODS restoration — bridge deck "
+                  f"{args.stations}x{args.width_nodes} @ {f0:.2f} Hz",
+            view=(24, -66), aspect=(2.3, 1, 0.9), gain_frac=0.22)
+        r = render_summary_deck(mv, spec, f0, Uk, Vk, st,
+                                out / f"{stem}_summary.png")
+        print(f"[3b] beam-theory consistency (theta vs d(dZ)/dx): r={r:.3f}")
+    else:
+        geom, disp, rings = restore_cylinder_ods(
+            mv, Uk, Vk, n_per_ring=args.nodes_per_ring, n_layers=args.layers)
+        print(f"[3] restored on cylinder: {geom.n_nodes} nodes, "
+              f"{len(geom.edges)} edges "
+              f"({args.nodes_per_ring}/ring x {args.layers} rings)")
+        stem = "ods_cylinder_restoration"
+        gif, mp4 = render_animation(
+            geom, disp, f0, out / f"{stem}.gif", out / f"{stem}.mp4",
+            title=f"3D ODS restoration — cylinder {args.nodes_per_ring}"
+                  f"x{args.layers} @ {f0:.2f} Hz")
+        render_summary(mv, spec, f0, Uk, Vk, rings,
+                       out / f"{stem}_summary.png")
     print(f"[4] wrote {gif}" + (f", {mp4}" if mp4 else "")
-          + f", {out / 'ods_restoration_summary.png'}")
+          + f", {out / (stem + '_summary.png')}")
     return 0
 
 
