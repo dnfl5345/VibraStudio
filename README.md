@@ -77,6 +77,12 @@ python tools/ods_from_motion_vectors.py --demo                    # 회전기기
 python tools/ods_from_motion_vectors.py --demo --structure deck   # 교량 상판(grid)
 python tools/ods_from_motion_vectors.py --video machine.mp4       # 영상 → optical flow
 python tools/ods_from_motion_vectors.py --npz vectors.npz         # 장비 내보내기 데이터
+
+# 실측 예시: 모터 리그 6 Hz 가진 영상 (ROI=케이싱, 기준영역=플레이트로
+# 카메라 흔들림 공통모드 제거, 축 기울기 15.3° 정렬)
+python tools/ods_from_motion_vectors.py --video test_vib_6hz.mp4 \
+    --roi 280,130,600,470 --ref-roi 20,60,230,420 --angle 15.3 \
+    --out docs/ods_restoration/motor_6hz
 ```
 
 측정점별 FFT로 지배 주파수의 복소 진폭·위상을 뽑고(spectral ODS), 축방향

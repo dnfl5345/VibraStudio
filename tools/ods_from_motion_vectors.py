@@ -76,12 +76,22 @@ class MotionVectors:
 
     @classmethod
     def from_video(cls, path: str, grid: tuple[int, int] = (24, 12),
-                   max_frames: int = 1024) -> "MotionVectors":
+                   max_frames: int = 1024,
+                   roi: tuple[int, int, int, int] | None = None,
+                   ref_roi: tuple[int, int, int, int] | None = None
+                   ) -> "MotionVectors":
         """Dense Farneback optical flow sampled on a regular grid.
 
         Flow is computed frame-to-reference (first frame) so u/v are
         displacements, not velocities — the same convention vendors use
         when exporting motion vectors.
+
+        roi     (x0, y0, x1, y1) image region to place the grid on
+                (default: central 80% of the frame).
+        ref_roi optional stationary region (e.g. the mounting plate or
+                a rigid background). Its mean per-frame motion is
+                subtracted from every tracked point — common-mode
+                rejection of handheld camera shake.
         """
         import cv2
 
@@ -95,11 +105,17 @@ class MotionVectors:
         ref_g = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
         h, w = ref_g.shape
 
-        gx = np.linspace(w * 0.1, w * 0.9, grid[0]).astype(int)
-        gy = np.linspace(h * 0.1, h * 0.9, grid[1]).astype(int)
+        x0, y0, x1, y1 = roi if roi else (int(w * .1), int(h * .1),
+                                          int(w * .9), int(h * .9))
+        gx = np.linspace(x0, x1 - 1, grid[0]).astype(int)
+        gy = np.linspace(y0, y1 - 1, grid[1]).astype(int)
         pts = np.array([(x, y) for y in gy for x in gx])
+        if ref_roi:
+            rx0, ry0, rx1, ry1 = ref_roi
+            rmask = np.zeros((h, w), bool)
+            rmask[ry0:ry1, rx0:rx1] = True
 
-        us, vs = [], []
+        us, vs, ru, rv = [], [], [], []
         prev = ref_g
         acc = np.zeros((h, w, 2), np.float32)
         for _ in range(max_frames):
@@ -113,10 +129,28 @@ class MotionVectors:
             acc += flow          # integrate frame-to-frame flow -> displacement
             us.append(acc[pts[:, 1], pts[:, 0], 0])
             vs.append(-acc[pts[:, 1], pts[:, 0], 1])   # image y is down
+            if ref_roi:
+                ru.append(acc[..., 0][rmask].mean())
+                rv.append(-acc[..., 1][rmask].mean())
             prev = g
         cap.release()
+        u, v = np.array(us), np.array(vs)
+        if ref_roi:
+            u -= np.array(ru)[:, None]
+            v -= np.array(rv)[:, None]
         pts_up = np.column_stack([pts[:, 0], h - pts[:, 1]])   # y up
-        return cls(pts_up, np.array(us), np.array(vs), fps)
+        return cls(pts_up, u, v, fps)
+
+    def rotated(self, axis_angle_deg: float) -> "MotionVectors":
+        """Rotate points and vector components so a machine axis that sits
+        at `axis_angle_deg` (CCW from image x, y-up frame) maps to +x."""
+        a = np.radians(-axis_angle_deg)
+        c, s = np.cos(a), np.sin(a)
+        R = np.array([[c, -s], [s, c]])
+        pts = self.points @ R.T
+        u = c * self.u - s * self.v
+        v = s * self.u + c * self.v
+        return MotionVectors(pts, u, v, self.fps)
 
     @classmethod
     def demo(cls, fps: float = 240.0, n_frames: int = 1024,
@@ -543,9 +577,20 @@ def main(argv=None) -> int:
                     help="deck: stations along the span")
     ap.add_argument("--width-nodes", type=int, default=5,
                     help="deck: nodes across the width")
+    ap.add_argument("--roi", default=None,
+                    help="video: x0,y0,x1,y1 region to track (image px)")
+    ap.add_argument("--ref-roi", default=None,
+                    help="video: x0,y0,x1,y1 stationary region for "
+                         "camera-shake common-mode rejection")
+    ap.add_argument("--angle", type=float, default=0.0,
+                    help="machine-axis angle in deg (CCW from image x, "
+                         "y-up); points/vectors are rotated to align it +x")
     ap.add_argument("--out", default="docs/ods_restoration",
                     help="output directory")
     args = ap.parse_args(argv)
+
+    def _parse_roi(s):
+        return tuple(int(x) for x in s.split(",")) if s else None
 
     if args.demo:
         mv = (MotionVectors.demo_bridge() if args.structure == "deck"
@@ -553,7 +598,10 @@ def main(argv=None) -> int:
     elif args.npz:
         mv = MotionVectors.from_npz(args.npz)
     else:
-        mv = MotionVectors.from_video(args.video)
+        mv = MotionVectors.from_video(args.video, roi=_parse_roi(args.roi),
+                                      ref_roi=_parse_roi(args.ref_roi))
+    if args.angle:
+        mv = mv.rotated(args.angle)
     print(f"[1] motion vectors: {mv.points.shape[0]} points x "
           f"{mv.u.shape[0]} frames @ {mv.fps:g} fps")
 
