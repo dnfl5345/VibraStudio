@@ -79,11 +79,21 @@ python tools/ods_from_motion_vectors.py --video machine.mp4       # 영상 → o
 python tools/ods_from_motion_vectors.py --npz vectors.npz         # 장비 내보내기 데이터
 
 # 실측 예시: 모터 리그 6 Hz 가진 영상 (ROI=케이싱, 기준영역=플레이트로
-# 카메라 흔들림 공통모드 제거, 축 기울기 15.3° 정렬)
+# 카메라 흔들림 공통모드 제거, 축 기울기 15.3° 정렬, 원본 오버레이 비교)
 python tools/ods_from_motion_vectors.py --video test_vib_6hz.mp4 \
     --roi 280,130,600,470 --ref-roi 20,60,230,420 --angle 15.3 \
-    --out docs/ods_restoration/motor_6hz
+    --overlay --overlay-gain 8 --out docs/ods_restoration/motor_6hz
+
+# 교량 종단간 검증: 합성 교량 영상 생성 → 복원 → 원본 오버레이
+python tools/make_bridge_test_video.py bridge_synth.mp4
+python tools/ods_from_motion_vectors.py --video bridge_synth.mp4 \
+    --structure deck --roi 40,165,600,215 --overlay --overlay-gain 4 \
+    --out docs/ods_restoration/bridge_video
 ```
+
+`--overlay`는 복원된 노드-링크 형상을 단일 스펙트럼 성분으로 프레임별 재구성해
+원본 영상 위에 위상 동기로 투영합니다(증폭 배율 화면 표기). 재구성 vs 실측
+시계열 상관을 위상 동기 지표로 출력합니다(합성 교량 r=0.988, 실측 모터 r=0.891).
 
 측정점별 FFT로 지배 주파수의 복소 진폭·위상을 뽑고(spectral ODS), 축방향
 스테이션(링)별 최소자승 적합으로 축방향·수직 병진과 n=2 타원화를 분리해

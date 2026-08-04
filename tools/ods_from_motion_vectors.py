@@ -255,7 +255,7 @@ def spectral_ods(mv: MotionVectors, freq: float | None = None,
     ref = np.argmax(np.abs(Uk) ** 2 + np.abs(Vk) ** 2)
     rot = np.exp(-1j * np.angle(Vk[ref] if abs(Vk[ref]) > abs(Uk[ref]) else Uk[ref]))
     spectrum = np.sqrt((np.abs(U) ** 2 + np.abs(V) ** 2).mean(axis=1))
-    return f[k], Uk * rot, Vk * rot, (f, spectrum)
+    return f[k], Uk * rot, Vk * rot, (f, spectrum), rot
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +557,103 @@ def render_summary_deck(mv: MotionVectors, spec, f0, Uk, Vk, st, out_png: Path):
     return r
 
 
+def render_video_overlay(geom: Geometry, disp: np.ndarray, f0: float,
+                         rot: complex, video_path: str, pts_img: np.ndarray,
+                         angle_deg: float, out_mp4: Path, out_gif: Path,
+                         gain: float = 5.0, mv: "MotionVectors | None" = None):
+    """Project the restored node-link shape back onto the source video.
+
+    The restored displacement is reconstructed per frame from the single
+    spectral line (d(t) = Re[D e^{i 2*pi*f0 t}], with the phase-reference
+    rotation undone via `rot`) and drawn over the original frames in the
+    same side-view projection the restoration came from: node axial
+    coordinate spans the tracked points along the machine axis, transverse
+    coordinate spans their perpendicular extent, out-of-plane is dropped.
+    Displacements are in pixels already (they were fit from pixel motion
+    vectors), amplified by `gain` and annotated as such.
+
+    Returns the correlation between the reconstructed single-line motion
+    and the measured vector time series (phase-sync sanity check) when
+    `mv` is given.
+    """
+    import cv2
+    from matplotlib import colormaps
+    import imageio.v2 as imageio
+
+    a = np.radians(angle_deg)
+    R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])   # rot->img
+    pts_rot = pts_img @ R          # image(y-up) -> machine frame (R^-1 = R^T)
+    x_lo, x_hi = pts_rot[:, 0].min(), pts_rot[:, 0].max()
+    y_c = pts_rot[:, 1].mean()
+    trans_half = max(np.ptp(pts_rot[:, 1]) / 2, 1e-9)
+
+    nx = geom.nodes[:, 0]
+    n01 = (nx - nx.min()) / max(np.ptp(nx), 1e-9)
+    z_half = max(np.abs(geom.nodes[:, 2]).max(), 1e-9)
+    base_rot = np.column_stack([x_lo + n01 * (x_hi - x_lo),
+                                y_c + geom.nodes[:, 2] / z_half * trans_half
+                                if np.abs(geom.nodes[:, 2]).max() > 1e-9
+                                else np.full(geom.n_nodes, y_c)])
+
+    disp_img = disp * np.conj(rot)          # undo phase referencing
+    amp = np.abs(disp).sum(axis=1)
+    cmap = colormaps["plasma"]
+    node_col = (np.array([cmap(0.15 + 0.8 * v)[:3] for v in
+                          amp / max(amp.max(), 1e-12)]) * 255)[:, ::-1]
+
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    edges = np.asarray(geom.edges)
+    frames_out = []
+    n = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        h = frame.shape[0]
+        ph = np.exp(1j * 2 * np.pi * f0 * (n - 1) / fps)
+        du = gain * (disp_img[:, 0] * ph).real
+        dv = gain * (disp_img[:, 2] * ph).real
+        pos_rot = base_rot + np.column_stack([du, dv])
+        pos_img = pos_rot @ R.T
+        px = np.column_stack([pos_img[:, 0], h - pos_img[:, 1]]).astype(int)
+        ghost = (base_rot @ R.T)
+        gx = np.column_stack([ghost[:, 0], h - ghost[:, 1]]).astype(int)
+        for e0, e1 in edges:
+            cv2.line(frame, tuple(gx[e0]), tuple(gx[e1]), (90, 90, 90), 1,
+                     cv2.LINE_AA)
+        for e0, e1 in edges:
+            c = tuple(int(v) for v in (node_col[e0] + node_col[e1]) / 2)
+            cv2.line(frame, tuple(px[e0]), tuple(px[e1]), c, 2, cv2.LINE_AA)
+        cv2.putText(frame, f"restored ODS {f0:.2f} Hz  x{gain:g} amplified",
+                    (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (87, 119, 217),
+                    1, cv2.LINE_AA)
+        frames_out.append(frame[..., ::-1].copy())
+        n += 1
+    cap.release()
+
+    imageio.mimsave(out_mp4, frames_out, fps=int(round(fps)), quality=8)
+    imageio.mimsave(out_gif, frames_out[::2], fps=max(1, int(round(fps / 2))),
+                    loop=0)
+
+    if mv is None:
+        return None
+    # phase-sync check: single-line reconstruction vs measured series, on
+    # the strongest measured points (in the rotated/machine frame)
+    T = mv.u.shape[0]
+    t = np.arange(T) / mv.fps
+    win = np.hanning(T)
+    Uk = np.fft.rfft((mv.u - mv.u.mean(0)) * win[:, None], axis=0)[
+        int(round(f0 * T / mv.fps))] * 2 / win.sum()
+    Vk = np.fft.rfft((mv.v - mv.v.mean(0)) * win[:, None], axis=0)[
+        int(round(f0 * T / mv.fps))] * 2 / win.sum()
+    strongest = np.argsort(np.abs(Vk))[-20:]
+    rec = (Vk[strongest][None, :] * np.exp(1j * 2 * np.pi * f0 * t)[:, None]).real
+    meas = mv.v[:, strongest] - mv.v[:, strongest].mean(0)
+    r = np.corrcoef(rec.ravel(), meas.ravel())[0, 1]
+    return float(r)
+
+
 # ---------------------------------------------------------------------------
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -585,6 +682,11 @@ def main(argv=None) -> int:
     ap.add_argument("--angle", type=float, default=0.0,
                     help="machine-axis angle in deg (CCW from image x, "
                          "y-up); points/vectors are rotated to align it +x")
+    ap.add_argument("--overlay", action="store_true",
+                    help="video: also render the restored shape overlaid "
+                         "on the original frames (phase-synchronized)")
+    ap.add_argument("--overlay-gain", type=float, default=5.0,
+                    help="overlay displacement amplification factor")
     ap.add_argument("--out", default="docs/ods_restoration",
                     help="output directory")
     args = ap.parse_args(argv)
@@ -600,12 +702,13 @@ def main(argv=None) -> int:
     else:
         mv = MotionVectors.from_video(args.video, roi=_parse_roi(args.roi),
                                       ref_roi=_parse_roi(args.ref_roi))
+    pts_img = mv.points.copy()          # image-frame coords for the overlay
     if args.angle:
         mv = mv.rotated(args.angle)
     print(f"[1] motion vectors: {mv.points.shape[0]} points x "
           f"{mv.u.shape[0]} frames @ {mv.fps:g} fps")
 
-    f0, Uk, Vk, spec = spectral_ods(mv, freq=args.freq)
+    f0, Uk, Vk, spec, rot = spectral_ods(mv, freq=args.freq)
     print(f"[2] spectral ODS: dominant frequency {f0:.3f} Hz, "
           f"max |v| {np.abs(Vk).max():.3f}")
 
@@ -641,6 +744,16 @@ def main(argv=None) -> int:
                        out / f"{stem}_summary.png")
     print(f"[4] wrote {gif}" + (f", {mp4}" if mp4 else "")
           + f", {out / (stem + '_summary.png')}")
+
+    if args.overlay and args.video:
+        r = render_video_overlay(
+            geom, disp, f0, rot, args.video, pts_img, args.angle,
+            out / f"{stem}_overlay.mp4", out / f"{stem}_overlay.gif",
+            gain=args.overlay_gain, mv=mv)
+        print(f"[5] overlay written ({stem}_overlay.mp4/.gif), "
+              f"phase-sync correlation r={r:.3f}")
+    elif args.overlay:
+        print("[5] --overlay ignored: needs --video input")
     return 0
 
 
