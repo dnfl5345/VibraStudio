@@ -66,6 +66,25 @@ python -m venv .venv312
    `Build Structure` → `Auto-map Channels`(X+Z / X+Y+Z / 단축 매핑). 예: Cylinder, 12 nodes/ring, 2 layers
    = 12노드×2층 원통. 매핑은 채널 테이블의 Pt(노드 id)·Dir 열로 직접 수정 가능하며 Save Config에 함께 저장됨
 
+## 모션 벡터 → 3D ODS 복원 (오프라인 도구)
+
+모션 증폭 장비(RDI Iris M 등)가 출력한 모션 벡터(또는 그 영상)를 입력으로,
+ODS 뷰와 같은 원통(cylinder) 노드-링크 구조 위에 3차원 ODS를 복원하고
+애니메이션(GIF/MP4)으로 내보내는 헤드리스 도구입니다.
+
+```bash
+python tools/ods_from_motion_vectors.py --demo                 # 대표 합성 데이터
+python tools/ods_from_motion_vectors.py --video machine.mp4    # 영상 → optical flow
+python tools/ods_from_motion_vectors.py --npz vectors.npz      # 장비 내보내기 데이터
+```
+
+측정점별 FFT로 지배 주파수의 복소 진폭·위상을 뽑고(spectral ODS), 축방향
+스테이션(링)별 최소자승 적합으로 축방향·수직 병진과 n=2 타원화를 분리해
+원통 노드에 전개합니다. 단일 카메라 시점이라 화면 수직(Y) 병진 성분은 관측
+불가하며 0으로 둡니다. 결과 예시: [docs/ods_restoration/](docs/ods_restoration/)
+
+![ODS restoration](docs/ods_restoration/ods_cylinder_restoration.gif)
+
 ## 아키텍처
 
 ```
