@@ -95,6 +95,15 @@ python tools/ods_from_motion_vectors.py --video bridge_synth.mp4 \
 원본 영상 위에 위상 동기로 투영합니다(증폭 배율 화면 표기). 재구성 vs 실측
 시계열 상관을 위상 동기 지표로 출력합니다(합성 교량 r=0.988, 실측 모터 r=0.891).
 
+### ROI 선별 위상 증폭 (CSP 연산량 절감 연구)
+
+`tools/roi_motion_magnify.py` — 비서브샘플링 complex steerable pyramid 기반
+위상 증폭을 전체 프레임 vs 자동 ROI(저해상도 대역 파워 사전 스캔 → 최대
+핫스팟 bbox → 미러 패딩 증폭 → 코사인 페더 블렌딩) 두 모드로 실행하고 정량
+비교합니다. 실측 모터 영상(120fr 600×690, 5–7 Hz, ×15): 전체 384.5 s →
+ROI(프레임의 21.7%) 78.9 s로 **4.9× 고속화**, ROI 내부 충실도 r=0.9999
+(NRMSE 0.14%). 결과: [docs/ods_restoration/roi_magnify/](docs/ods_restoration/roi_magnify/)
+
 측정점별 FFT로 지배 주파수의 복소 진폭·위상을 뽑고(spectral ODS), 축방향
 스테이션(링)별 최소자승 적합으로 축방향·수직 병진과 n=2 타원화를 분리해
 원통 노드에 전개합니다. 단일 카메라 시점이라 화면 수직(Y) 병진 성분은 관측
