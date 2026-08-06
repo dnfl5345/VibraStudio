@@ -43,6 +43,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from vibrastudio.geometry import Geometry, make_cylinder, make_grid  # noqa: E402
 
+import cv2  # noqa: E402  (also imported lazily inside from_video)
+
+_ROT = {90: cv2.ROTATE_90_COUNTERCLOCKWISE, 180: cv2.ROTATE_180,
+        270: cv2.ROTATE_90_CLOCKWISE}
+
 # Repo dark-theme palette (vibrastudio.ui.theme)
 BG = "#1f1e1c"
 ACCENT = "#d97757"
@@ -78,20 +83,41 @@ class MotionVectors:
     def from_video(cls, path: str, grid: tuple[int, int] = (24, 12),
                    max_frames: int = 1024,
                    roi: tuple[int, int, int, int] | None = None,
-                   ref_roi: tuple[int, int, int, int] | None = None
-                   ) -> "MotionVectors":
+                   ref_roi: tuple[int, int, int, int] | None = None,
+                   rotate: int = 0, flow_mode: str = "direct",
+                   detrend: str = "affine") -> "MotionVectors":
         """Dense Farneback optical flow sampled on a regular grid.
 
-        Flow is computed frame-to-reference (first frame) so u/v are
-        displacements, not velocities — the same convention vendors use
-        when exporting motion vectors.
+        u/v are displacements, not velocities — the convention vendors use
+        when exporting motion vectors. Two ways to get there:
+
+        flow_mode="direct" (default) measures every frame against the first
+        one, so the displacement of a point never depends on the frames in
+        between. flow_mode="accum" integrates frame-to-frame flow, which
+        tolerates larger motion but accumulates error: on the 6 Hz motor
+        clip the two disagree by 0.62 px median / 4.4 px at p90 after 120
+        frames, against a vibration amplitude of ~2.5 px, so "accum" is
+        only worth it when per-frame motion is too large for a direct match.
+
+        rotate applies a 90/180/270 degree turn to every frame first, for
+        clips stored in a different orientation than they were shot.
 
         roi     (x0, y0, x1, y1) image region to place the grid on
                 (default: central 80% of the frame).
         ref_roi optional stationary region (e.g. the mounting plate or
-                a rigid background). Its mean per-frame motion is
-                subtracted from every tracked point — common-mode
-                rejection of handheld camera shake.
+                a rigid background) used to cancel whole-scene motion.
+        detrend how that region is used:
+                "mean"   subtract its mean displacement — cancels camera
+                         translation only.
+                "affine" (default when ref_roi is given) fit
+                         d = a0 + a1*x + a2*y over the region each frame and
+                         subtract the fitted field everywhere. A camera that
+                         also pans, rolls, or rocks puts a *gradient* across
+                         the frame, not an offset, and on the 6 Hz motor clip
+                         that gradient carries 83% of the band energy — it
+                         moves the static background as much as the machine,
+                         so a mean-only reference leaves it almost intact.
+                "none"   keep the raw field.
         """
         import cv2
 
@@ -102,6 +128,8 @@ class MotionVectors:
         ok, ref = cap.read()
         if not ok:
             raise IOError("empty video")
+        if rotate:
+            ref = cv2.rotate(ref, _ROT[rotate])
         ref_g = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
         h, w = ref_g.shape
 
@@ -111,9 +139,17 @@ class MotionVectors:
         gy = np.linspace(y0, y1 - 1, grid[1]).astype(int)
         pts = np.array([(x, y) for y in gy for x in gx])
         if ref_roi:
-            rx0, ry0, rx1, ry1 = ref_roi
+            boxes = [ref_roi] if isinstance(ref_roi[0], int) else list(ref_roi)
             rmask = np.zeros((h, w), bool)
-            rmask[ry0:ry1, rx0:rx1] = True
+            for bx0, by0, bx1, by1 in boxes:
+                rmask[by0:by1, bx0:bx1] = True
+            ryy, rxx = np.nonzero(rmask)
+            rxx, ryy = rxx.astype(float), ryy.astype(float)
+            # design matrices, both scaled the same way so the fit transfers
+            Aref = np.column_stack([np.ones_like(rxx), rxx / 100.0, ryy / 100.0])
+            Apts = np.column_stack([np.ones(len(pts)), pts[:, 0] / 100.0,
+                                    pts[:, 1] / 100.0])
+            Aref_pinv = np.linalg.pinv(Aref)
 
         us, vs, ru, rv = [], [], [], []
         prev = ref_g
@@ -122,22 +158,40 @@ class MotionVectors:
             ok, frame = cap.read()
             if not ok:
                 break
+            if rotate:
+                frame = cv2.rotate(frame, _ROT[rotate])
             g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            flow = cv2.calcOpticalFlowFarneback(
-                prev, g, None, pyr_scale=0.5, levels=3, winsize=21,
-                iterations=3, poly_n=7, poly_sigma=1.5, flags=0)
-            acc += flow          # integrate frame-to-frame flow -> displacement
-            us.append(acc[pts[:, 1], pts[:, 0], 0])
-            vs.append(-acc[pts[:, 1], pts[:, 0], 1])   # image y is down
-            if ref_roi:
-                ru.append(acc[..., 0][rmask].mean())
-                rv.append(-acc[..., 1][rmask].mean())
-            prev = g
+            if flow_mode == "accum":
+                flow = cv2.calcOpticalFlowFarneback(
+                    prev, g, None, pyr_scale=0.5, levels=3, winsize=21,
+                    iterations=3, poly_n=7, poly_sigma=1.5, flags=0)
+                acc += flow      # integrate frame-to-frame flow -> displacement
+                prev = g
+            else:                # direct: each frame against the reference —
+                acc = cv2.calcOpticalFlowFarneback(   # no integration, no drift
+                    ref_g, g, None, pyr_scale=0.5, levels=3, winsize=21,
+                    iterations=3, poly_n=7, poly_sigma=1.5, flags=0)
+            uu = acc[pts[:, 1], pts[:, 0], 0]
+            vv = -acc[pts[:, 1], pts[:, 0], 1]         # image y is down
+            if ref_roi and detrend != "none":
+                gu = acc[..., 0][rmask]
+                gv = -acc[..., 1][rmask]
+                if detrend == "affine":
+                    uu = uu - Apts @ (Aref_pinv @ gu)
+                    vv = vv - Apts @ (Aref_pinv @ gv)
+                    ru.append(np.hypot(*(Aref @ (Aref_pinv @ gu),
+                                         Aref @ (Aref_pinv @ gv))).mean())
+                else:
+                    uu, vv = uu - gu.mean(), vv - gv.mean()
+                    ru.append(float(np.hypot(gu.mean(), gv.mean())))
+            us.append(uu)
+            vs.append(vv)
         cap.release()
         u, v = np.array(us), np.array(vs)
-        if ref_roi:
-            u -= np.array(ru)[:, None]
-            v -= np.array(rv)[:, None]
+        if ru:
+            print(f"[1b] {detrend} scene trend removed: "
+                  f"mean |d| over reference region "
+                  f"{np.mean(ru):.3f} px, peak {np.max(ru):.3f} px")
         pts_up = np.column_stack([pts[:, 0], h - pts[:, 1]])   # y up
         return cls(pts_up, u, v, fps)
 
@@ -263,12 +317,19 @@ def spectral_ods(mv: MotionVectors, freq: float | None = None,
 # ---------------------------------------------------------------------------
 def restore_cylinder_ods(mv: MotionVectors, Uk: np.ndarray, Vk: np.ndarray,
                          n_per_ring: int = 12, n_layers: int = 6,
-                         radius: float = 0.35, length: float = 1.6):
+                         radius: float = 0.35, length: float = 1.6,
+                         rocking: bool = True):
     """Fit per-ring motion from image-plane vectors, expand to 3D nodes.
 
-    Returns (geometry, disp) with disp (n_nodes, 3) complex — the full 3D
-    deflection shape: axial + vertical rigid translation per ring plus the
-    n=2 radial ovalization the projection equations allow us to observe.
+    Returns (geometry, disp, rings) with disp (n_nodes, 3) complex — the
+    3D deflection shape: axial + transverse translation per ring, the
+    section rocking that a cantilevered casing shows, and the n=2 radial
+    ovalization the projection equations allow us to observe.
+
+    rings["r2"] is the share of the measured motion field the fitted model
+    reproduces. It is the number to check before trusting the animation:
+    on the 6 Hz motor clip it is 0.34-0.66 without the rocking term and
+    0.72-0.87 with it, so the term is not optional for that geometry.
     """
     geom = make_cylinder(n_per_ring=n_per_ring, n_layers=n_layers,
                          radius=radius, height=length)
@@ -290,26 +351,44 @@ def restore_cylinder_ods(mv: MotionVectors, Uk: np.ndarray, Vk: np.ndarray,
     dZ = np.zeros(n_layers, complex)
     a2 = np.zeros(n_layers, complex)
     b2 = np.zeros(n_layers, complex)
+    phi = np.zeros(n_layers, complex)          # section rocking about +Y
     filled = np.zeros(n_layers, bool)
+    pred_u = np.zeros_like(Uk)
+    pred_v = np.zeros_like(Vk)
     for j in range(n_layers):
         m = station == j
         if m.sum() < 4:
             continue
         th = theta_p[m]
-        dX[j] = Uk[m].mean()
+        # u = dX + phi*z  — a casing that rocks about its mount moves axially
+        # in proportion to height, so without this term the fit forces rigid
+        # translation and buries the rocking in the residual
+        Au = (np.column_stack([np.ones(m.sum()), yr[m]]) if rocking
+              else np.ones((m.sum(), 1)))
+        cu, *_ = np.linalg.lstsq(Au, Uk[m], rcond=None)
+        dX[j] = cu[0]
+        if rocking:
+            phi[j] = cu[1]
+        pred_u[m] = Au @ cu
         # v = dZ + (a2 cos2t + b2 sin2t) cos(t)  — complex linear lstsq
         A = np.column_stack([np.ones(m.sum()),
                              np.cos(2 * th) * np.cos(th),
                              np.sin(2 * th) * np.cos(th)])
         coef, *_ = np.linalg.lstsq(A, Vk[m], rcond=None)
         dZ[j], a2[j], b2[j] = coef
+        pred_v[m] = A @ coef
         filled[j] = True
     if not filled.all():                       # interpolate empty stations
         idx = np.arange(n_layers)
-        for arr in (dX, dZ, a2, b2):
+        for arr in (dX, dZ, a2, b2, phi):
             arr[~filled] = np.interp(idx[~filled], idx[filled],
                                      arr[filled].real) + 1j * np.interp(
                 idx[~filled], idx[filled], arr[filled].imag)
+
+    meas = np.concatenate([Uk, Vk])
+    pred = np.concatenate([pred_u, pred_v])
+    r2 = float(1.0 - (np.abs(meas - pred) ** 2).sum()
+               / max((np.abs(meas - meas.mean()) ** 2).sum(), 1e-12))
 
     disp = np.zeros((geom.n_nodes, 3), complex)
     for j in range(n_layers):
@@ -318,10 +397,10 @@ def restore_cylinder_ods(mv: MotionVectors, Uk: np.ndarray, Vk: np.ndarray,
             _, ny_, nz_ = geom.nodes[k]
             th = np.arctan2(ny_, nz_)          # angle from +Z toward +Y
             d_r = a2[j] * np.cos(2 * th) + b2[j] * np.sin(2 * th)
-            disp[k, 0] = dX[j]
+            disp[k, 0] = dX[j] + phi[j] * (nz_ / max(radius, 1e-9))
             disp[k, 1] = d_r * np.sin(th)      # dY: ovalization only
             disp[k, 2] = dZ[j] + d_r * np.cos(th)
-    rings = {"dX": dX, "dZ": dZ, "a2": a2, "b2": b2}
+    rings = {"dX": dX, "dZ": dZ, "a2": a2, "b2": b2, "phi": phi, "r2": r2}
     return geom, disp, rings
 
 
@@ -560,7 +639,8 @@ def render_summary_deck(mv: MotionVectors, spec, f0, Uk, Vk, st, out_png: Path):
 def render_video_overlay(geom: Geometry, disp: np.ndarray, f0: float,
                          rot: complex, video_path: str, pts_img: np.ndarray,
                          angle_deg: float, out_mp4: Path, out_gif: Path,
-                         gain: float = 5.0, mv: "MotionVectors | None" = None):
+                         gain: float = 5.0, mv: "MotionVectors | None" = None,
+                         rotate: int = 0):
     """Project the restored node-link shape back onto the source video.
 
     The restored displacement is reconstructed per frame from the single
@@ -610,6 +690,8 @@ def render_video_overlay(geom: Geometry, disp: np.ndarray, f0: float,
         ok, frame = cap.read()
         if not ok:
             break
+        if rotate:      # points were tracked in the rotated frame, so the
+            frame = cv2.rotate(frame, _ROT[rotate])   # overlay must match
         h = frame.shape[0]
         ph = np.exp(1j * 2 * np.pi * f0 * (n - 1) / fps)
         du = gain * (disp_img[:, 0] * ph).real
@@ -677,11 +759,31 @@ def main(argv=None) -> int:
     ap.add_argument("--roi", default=None,
                     help="video: x0,y0,x1,y1 region to track (image px)")
     ap.add_argument("--ref-roi", default=None,
-                    help="video: x0,y0,x1,y1 stationary region for "
-                         "camera-shake common-mode rejection")
+                    help="video: x0,y0,x1,y1 stationary region used to cancel "
+                         "whole-scene motion; several boxes may be given "
+                         "';'-separated, and should straddle the frame so the "
+                         "affine gradient is not extrapolated from one corner")
+    ap.add_argument("--check-roi", default=None,
+                    help="video: x0,y0,x1,y1 static region held out of "
+                         "--ref-roi; the tool reports how much of the "
+                         "analysis-line motion survives there, which bounds "
+                         "how much of the restored shape is scene motion")
+    ap.add_argument("--detrend", choices=["affine", "mean", "none"],
+                    default="affine",
+                    help="how --ref-roi is used: affine (default) removes the "
+                         "fitted gradient field, mean removes only the offset")
     ap.add_argument("--angle", type=float, default=0.0,
                     help="machine-axis angle in deg (CCW from image x, "
                          "y-up); points/vectors are rotated to align it +x")
+    ap.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
+                    help="video: turn every frame CCW by this many degrees "
+                         "before analysis (for clips stored sideways)")
+    ap.add_argument("--flow-mode", choices=["direct", "accum"], default="direct",
+                    help="direct (default) measures each frame against the "
+                         "first; accum integrates frame-to-frame flow and "
+                         "drifts (0.62 px median over 120 motor frames)")
+    ap.add_argument("--no-rocking", action="store_true",
+                    help="drop the section-rocking DOF from the cylinder fit")
     ap.add_argument("--overlay", action="store_true",
                     help="video: also render the restored shape overlaid "
                          "on the original frames (phase-synchronized)")
@@ -692,7 +794,10 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     def _parse_roi(s):
-        return tuple(int(x) for x in s.split(",")) if s else None
+        if not s:
+            return None
+        boxes = [tuple(int(x) for x in b.split(",")) for b in s.split(";")]
+        return boxes[0] if len(boxes) == 1 else boxes
 
     if args.demo:
         mv = (MotionVectors.demo_bridge() if args.structure == "deck"
@@ -701,7 +806,29 @@ def main(argv=None) -> int:
         mv = MotionVectors.from_npz(args.npz)
     else:
         mv = MotionVectors.from_video(args.video, roi=_parse_roi(args.roi),
-                                      ref_roi=_parse_roi(args.ref_roi))
+                                      ref_roi=_parse_roi(args.ref_roi),
+                                      rotate=args.rotate,
+                                      flow_mode=args.flow_mode,
+                                      detrend=args.detrend)
+    if args.check_roi and args.video:
+        probe = MotionVectors.from_video(
+            args.video, grid=(16, 10), roi=_parse_roi(args.check_roi),
+            ref_roi=_parse_roi(args.ref_roi), rotate=args.rotate,
+            flow_mode=args.flow_mode, detrend=args.detrend)
+        fc, Up, Vp, _, _ = spectral_ods(probe, freq=args.freq)
+        fm, Um, Vm, _, _ = spectral_ods(mv, freq=fc)
+        a_bg = float(np.sqrt(np.abs(Up) ** 2 + np.abs(Vp) ** 2).mean())
+        a_ms = float(np.sqrt(np.abs(Um) ** 2 + np.abs(Vm) ** 2).mean())
+        print(f"[1c] scene-motion sanity check at {fc:.3f} Hz: "
+              f"machine {a_ms:.3f} px vs held-out static region "
+              f"{a_bg:.3f} px  (ratio {a_ms / max(a_bg, 1e-9):.2f}x)")
+        if a_ms < 2.0 * a_bg:
+            print("     WARNING: the static region moves nearly as much as "
+                  "the machine, so the restored shape is not separable from "
+                  "residual scene motion — treat it as unresolved, not as an "
+                  "ODS. A high model R^2 does not rescue this: a smooth "
+                  "scene-wide field is exactly what the model fits best.")
+
     pts_img = mv.points.copy()          # image-frame coords for the overlay
     if args.angle:
         mv = mv.rotated(args.angle)
@@ -731,10 +858,19 @@ def main(argv=None) -> int:
         print(f"[3b] beam-theory consistency (theta vs d(dZ)/dx): r={r:.3f}")
     else:
         geom, disp, rings = restore_cylinder_ods(
-            mv, Uk, Vk, n_per_ring=args.nodes_per_ring, n_layers=args.layers)
+            mv, Uk, Vk, n_per_ring=args.nodes_per_ring, n_layers=args.layers,
+            rocking=not args.no_rocking)
         print(f"[3] restored on cylinder: {geom.n_nodes} nodes, "
               f"{len(geom.edges)} edges "
               f"({args.nodes_per_ring}/ring x {args.layers} rings)")
+        print(f"[3b] model fit R^2 = {rings['r2']:.3f} "
+              f"(share of the measured motion field the shape reproduces; "
+              f"rocking {'on' if not args.no_rocking else 'OFF'})")
+        if args.video:
+            print("     note: R^2 is a fit statistic, NOT a validity check. "
+                  "This basis spans the affine fields a rocking camera "
+                  "produces, so leaving scene motion in RAISES it. Judge the "
+                  "result on [1c], not here.")
         stem = "ods_cylinder_restoration"
         gif, mp4 = render_animation(
             geom, disp, f0, out / f"{stem}.gif", out / f"{stem}.mp4",
@@ -749,7 +885,7 @@ def main(argv=None) -> int:
         r = render_video_overlay(
             geom, disp, f0, rot, args.video, pts_img, args.angle,
             out / f"{stem}_overlay.mp4", out / f"{stem}_overlay.gif",
-            gain=args.overlay_gain, mv=mv)
+            gain=args.overlay_gain, mv=mv, rotate=args.rotate)
         print(f"[5] overlay written ({stem}_overlay.mp4/.gif), "
               f"phase-sync correlation r={r:.3f}")
     elif args.overlay:
