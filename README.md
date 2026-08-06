@@ -120,14 +120,30 @@ python tools/ods_from_motion_vectors.py --video bridge_synth.mp4 \
   잔차 비를 출력하고, 2배 미만이면 "분리 불가"로 경고합니다.
 
 `tools/ods_synthetic_validation.py` 는 실제 정지 프레임에 **알려진** 변형
-형상과 **알려진** 카메라 운동을 주입해 영상을 만들고, 파이프라인이 복원한
+형상과 **알려진** 카메라 roll을 주입해 영상을 만들고, 파이프라인이 복원한
 결과를 진값 대비 MAC·진폭 이득으로 채점합니다(R²와 달리 카메라 운동을
 흡수해서 올릴 수 없는 지표).
 
 ```bash
 python tools/ods_synthetic_validation.py --base frame.png \
-    --machine 135,25,475,330 --amp 2.0 --sweep --out docs/ods_validation
+    --machine 135,25,475,330 --amp 2.0 --sweep --shears 0,0.25,0.5,1.0,2.0 \
+    --out docs/ods_validation
 ```
+
+| 장면 운동 | detrend 없음 | 평균만 | **affine** |
+|---|---|---|---|
+| 0.99 px | MAC 0.860 | 0.939 | **0.975** |
+| 1.98 px | MAC 0.611 | 0.831 | **0.965** |
+| 3.95 px | MAC 0.268 | 0.741 | **0.920** |
+| 7.90 px | MAC 0.060 | 0.717 | 0.640 |
+
+제거하지 않으면 **약 2 px의 장면 운동만으로 형상 충실도가 절반**이 되고
+(MAC 0.982 → 0.611), 4 px면 무너집니다(0.268). 실측 모터 클립은 ~2.9 px 입니다.
+15개 실행에서 R²와 진값 MAC의 상관은 **r = −0.162** — MAC 0.060(완전히 틀림)이
+R² 0.752를, MAC 0.920(거의 맞음)이 R² 0.458을 냅니다.
+
+카메라가 완전히 정지해 MAC 0.982로 형상을 맞추는 경우에도 **진폭은 약 43%
+과소 보고**(gain 0.58)됩니다. 절대 진폭은 별도 교정 없이 인용하면 안 됩니다.
 
 전체 진단·수치·선행연구: [docs/ods_validation/](docs/ods_validation/),
 논문화 가능성 평가: [docs/paper/](docs/paper/).

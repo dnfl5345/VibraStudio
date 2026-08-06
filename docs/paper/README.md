@@ -43,9 +43,16 @@ Supporting evidence already in hand (`docs/ods_validation/`):
 * R² climbs monotonically as the assumed machine axis rotates *away* from the
   visible axis (0.833 at −15° → 0.943 at +51°, undetrended).
 * A controlled test (`tools/ods_synthetic_validation.py`) with a known
-  deflection shape and known injected camera shear reproduces the effect with
-  ground truth available, so MAC and amplitude gain can be reported against
-  the truth rather than against the model.
+  deflection shape and a known injected camera roll puts the correlation
+  between model R² and true MAC at **r = −0.162** over 15 runs. The clearest
+  pair: MAC 0.060 (shape destroyed) reports R² 0.752, while MAC 0.920 (shape
+  nearly right) reports R² 0.458.
+* The same test bounds the damage: ~2 px of unremoved scene motion halves
+  shape fidelity (MAC 0.982 → 0.611), ~4 px destroys it (0.268), and affine
+  removal holds MAC ≥ 0.92 out to ~4 px. The real clip carries ~2.9 px.
+* A separate calibration result worth reporting on its own: with the camera
+  perfectly still and MAC 0.982, the pipeline still under-reports amplitude
+  by ~43% (gain 0.58).
 
 ## What a paper would need that we do not have
 

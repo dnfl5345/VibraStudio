@@ -1,10 +1,17 @@
 """Ground-truth test: can the ODS pipeline tell a machine apart from its camera?
 
 Takes a real still frame, warps it with a *known* deflection shape confined to
-a machine region, adds a *known* whole-scene affine motion at the same
-frequency (the signature a panning/rocking camera leaves), and writes the
-result as a video. The restoration pipeline is then run on that video and the
-station profile it recovers is scored against the shape that was injected.
+a machine region, adds a *known* whole-scene motion at the same frequency (a
+roll about the optical axis plus a translation — the signature a rocking
+camera leaves), and writes the result as a video. The restoration pipeline is
+then run on that video and the station profile it recovers is scored against
+the shape that was injected.
+
+The scene motion is a roll rather than a horizontal shear on purpose: a roll
+has a vertical component that competes directly with the transverse
+deflection being measured. A purely horizontal disturbance leaves the two
+orthogonal, and the pipeline passes the test without ever having to separate
+them.
 
 Two numbers matter:
 
@@ -54,9 +61,12 @@ def synthesize(base: np.ndarray, machine: tuple[int, int, int, int],
 
     amp   peak transverse deflection of the machine's free end, px
     cam_t whole-scene translation amplitude, px
-    cam_g whole-scene shear amplitude, px per 100 px of height — a camera
-          that rocks rather than merely shifts puts a gradient across the
-          frame, which is what a mean-only reference cannot remove
+    cam_g whole-scene rotation amplitude, px per 100 px from the frame
+          centre. Modelled as a roll about the optical axis,
+          u = -w(y-yc), v = +w(x-xc), so the scene motion has a *vertical*
+          component that competes directly with the deflection being
+          measured. A shear applied only horizontally would leave the two
+          orthogonal and the test would pass for the wrong reason.
     """
     h, w = base.shape[:2]
     x0, y0, x1, y1 = machine
@@ -74,8 +84,10 @@ def synthesize(base: np.ndarray, machine: tuple[int, int, int, int],
         # machine: transverse (image-y) deflection only, scaled by the shape
         dy = -amp * shape * s
         dx = np.zeros_like(dy)
-        # camera: uniform shift + shear that grows toward the top of the frame
-        dx = dx + (cam_t + cam_g * (h - yy) / 100.0) * sc
+        # camera: uniform shift + roll about the frame centre
+        wc = cam_g / 100.0 * sc
+        dx = dx + cam_t * sc - wc * (yy - h / 2.0)
+        dy = dy + wc * (xx - w / 2.0)
         # remap samples the source, so displace by -d
         vw.write(cv2.remap(base, (xx - dx).astype(np.float32),
                            (yy - dy).astype(np.float32), cv2.INTER_LINEAR,
@@ -119,16 +131,16 @@ def main(argv=None) -> int:
                     help="x0,y0,x1,y1 machine region (default: central band)")
     ap.add_argument("--amp", type=float, default=2.0,
                     help="true free-end deflection, px")
-    ap.add_argument("--cam-shear", type=float, default=6.0,
-                    help="camera shear amplitude, px per 100 px")
+    ap.add_argument("--cam-shear", type=float, default=1.0,
+                    help="camera roll amplitude, px per 100 px from centre")
     ap.add_argument("--sweep", action="store_true",
-                    help="sweep camera shear and plot MAC/gain against it")
+                    help="sweep camera roll and plot MAC/gain against it")
     ap.add_argument("--shears", default="0,0.25,0.5,1.0,2.0",
                     help="--sweep values, px per 100 px. Keep the resulting "
-                         "whole-frame camera displacement (~6.5x these, for a "
-                         "600 px frame) inside the optical-flow capture "
-                         "range, or the breakdown you measure is Farneback's, "
-                         "not the method's. The real motor clip sits near 0.45")
+                         "whole-frame camera displacement (printed per row) "
+                         "inside the optical-flow capture range, or the "
+                         "breakdown you measure is Farneback's, not the "
+                         "method's. The real motor clip sits near 0.45")
     ap.add_argument("--out", default="docs/ods_validation")
     args = ap.parse_args(argv)
 
@@ -156,7 +168,7 @@ def main(argv=None) -> int:
         clip = out / f"synth_shear{g:g}.mp4"
         truth = synthesize(base, machine, clip, amp=args.amp, cam_g=g,
                            cam_t=0.5 * g if g else 0.0)
-        cam_px = 0.5 * g + g * h / 100.0
+        cam_px = 0.5 * g + g * max(h, w) / 200.0
         for det in ("none", "mean", "affine"):
             r = score(clip, machine, refs, truth, det)
             r["cam_shear"], r["cam_px"] = g, cam_px
@@ -200,10 +212,10 @@ def main(argv=None) -> int:
     axes[1].set_ylabel("amplitude gain  (1 = correct)", color=TEXT)
     axes[1].axhline(1.0, color=TEXT, lw=0.8, ls="--")
     axes[2].set_ylabel("cylinder-model fit $R^2$", color=TEXT)
-    axes[2].set_title("$R^2$ rises as the answer gets worse", color=TEXT,
+    axes[2].set_title("$R^2$ does not track the left panel", color=TEXT,
                       fontsize=10)
     for ax in axes:
-        ax.set_xlabel("injected camera shear (px per 100 px)", color=TEXT)
+        ax.set_xlabel("injected camera roll (px per 100 px)", color=TEXT)
         ax.legend(fontsize=8, facecolor=BG, labelcolor=TEXT, edgecolor=FAINT)
     fig.suptitle("Known deflection shape + known camera motion: what the "
                  "pipeline recovers", color=TEXT, fontsize=12)

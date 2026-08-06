@@ -103,7 +103,71 @@ pipeline recovers by MAC against the injected shape and by amplitude gain.
 Unlike R², neither can be inflated by absorbing camera motion, because the
 answer is known.
 
-<!--SWEEP-->
+### What the ground-truth test says
+
+A cantilever-like shape with a 2.0 px free-end deflection is injected into the
+motor region of a real still frame, and a camera roll of increasing amplitude
+is injected over the whole frame at the same 6 Hz. Scene displacement is
+quoted as the peak whole-frame camera motion in pixels.
+
+| scene motion | detrend | MAC vs truth | amplitude gain | model R² |
+|---|---|---|---|---|
+| 0.00 px | any | 0.982 | 0.58 | 0.685 |
+| 0.99 px | none | 0.860 | 0.54 | 0.567 |
+| 0.99 px | mean | 0.939 | 0.45 | 0.523 |
+| 0.99 px | **affine** | **0.975** | 0.56 | 0.672 |
+| 1.98 px | none | 0.611 | 0.50 | 0.554 |
+| 1.98 px | mean | 0.831 | 0.38 | 0.660 |
+| 1.98 px | **affine** | **0.965** | 0.57 | 0.629 |
+| 3.95 px | none | 0.268 | 0.86 | 0.659 |
+| 3.95 px | mean | 0.741 | 0.60 | 0.802 |
+| 3.95 px | **affine** | **0.920** | 0.48 | 0.458 |
+| 7.90 px | none | 0.060 | 1.75 | 0.752 |
+| 7.90 px | mean | 0.717 | 1.36 | 0.858 |
+| 7.90 px | affine | 0.640 | 0.49 | 0.390 |
+
+![validation](validation.png)
+
+Four things fall out of this.
+
+**Scene motion of ~2 px is already enough to halve the shape fidelity** if it
+is not removed (MAC 0.982 → 0.611), and ~4 px destroys it (0.268). The real
+motor clip carries ~2.9 px. That is precisely the regime in which the original
+result was produced.
+
+**Affine removal holds MAC ≥ 0.92 out to ~4 px** of scene motion, where
+mean-only removal has already fallen to 0.741 and no removal to 0.268. Beyond
+that the affine fit itself degrades (0.640 at 7.9 px) because the reference
+regions no longer constrain a field that large.
+
+**R² does not track correctness.** Over the 15 runs its correlation with the
+true MAC is **r = −0.162** — slightly negative, effectively none. The sharpest
+pair: at 7.90 px with no detrending the recovered shape is completely wrong
+(MAC 0.060) and reports R² 0.752; at 3.95 px with affine removal the shape is
+nearly right (MAC 0.920) and reports R² 0.458. **The worse answer has the
+higher R².**
+
+**Amplitude gain is a usable warning even without ground truth.** Whenever the
+shape is right the gain sits at 0.5–0.6; it climbs past 1.0 (1.75, 1.36) only
+in the runs where the shape has collapsed. Scene motion inflates reported
+deflection, it does not shrink it.
+
+That 0.5–0.6 gain is itself a finding: **even with the camera perfectly still
+and the shape recovered at MAC 0.982, the pipeline under-reports amplitude by
+about 43%.** Per-station least squares averages over points whose true
+deflection varies within the station, and Farneback smooths sub-pixel motion.
+Absolute amplitudes from this pipeline should not be quoted without a
+calibration.
+
+A caveat on the test itself: the injected scene motion is a *roll* rather than
+a horizontal shear, deliberately. A roll has a vertical component that
+competes with the transverse deflection being measured. An earlier version of
+this test injected horizontal shear only, and the pipeline scored MAC ≥ 0.98
+at every amplitude with no detrending at all — it passed because the
+disturbance and the measurand never overlapped, not because it separated
+them.
+
+
 
 ## Prior art
 
@@ -127,7 +191,8 @@ support one. See `docs/paper/README.md` for the assessment.
 ```bash
 # ground-truth sweep
 python tools/ods_synthetic_validation.py --base frame.png \
-    --machine 135,25,475,330 --amp 2.0 --sweep --out docs/ods_validation
+    --machine 135,25,475,330 --amp 2.0 --sweep --shears 0,0.25,0.5,1.0,2.0 \
+    --out docs/ods_validation
 
 # the motor clip, with the checks on
 python tools/ods_from_motion_vectors.py --video test_vib_6hz.mp4 \
