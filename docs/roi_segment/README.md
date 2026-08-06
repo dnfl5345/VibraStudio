@@ -56,3 +56,45 @@ has been used to place virtual sensor grids, and notes that ROI extraction
 lowers computational complexity and improves robustness. What is less
 common in that literature is a head-to-head cost/coverage benchmark of the
 selection strategies themselves, which is what this study measures.
+
+## Graded resolution (LOD) — the FEM-mesh answer
+
+The box/segment study ends in a bind: cost follows the crop rectangle, and
+whatever falls outside it is dropped entirely. Grading the *resolution* the
+pyramid sees escapes that, the same way a finite element mesh is dense
+where the field varies and coarse in the far field. Note the direction —
+refining a region cannot help (phase accuracy comes from the pyramid band,
+not the pixel count) while coarsening one saves as 1/s^2, so the win is in
+the far field. `tools/lod_magnify.py` uses three zones: full resolution on
+the motion hotspot, 1/2 on the rest of the object, 1/s on everything else.
+Zones composite through the residual (magnified - original), which is
+band-limited and therefore survives upsampling, with feathered weights
+acting as transition elements.
+
+Motor clip (600x690, 120 fr, 5-7 Hz), whole-frame motion reproduced:
+
+| strategy | speedup | motion reproduced |
+|---|---|---|
+| LOD 1/4 | **x4.85** | **0.714** |
+| LOD 1/6 | x4.70 | 0.663 |
+| bbox | x4.64 | 0.621 |
+| LOD 1/3 | x4.14 | 0.748 |
+| LOD 1/2 | x3.10 | 0.808 |
+| segment | x1.08 | 0.762 |
+| full | x1.00 | 1.000 |
+
+**LOD dominates both hard-ROI strategies on this clip.** LOD 1/4 is faster
+than the box (x4.85 vs x4.64) *and* reproduces more of the motion (0.714 vs
+0.621), because the box's 59% of dropped motion energy is worth less than a
+coarse rendition of it. LOD 1/2 beats the segmentation mask on both axes at
+once (x3.10 / 0.808 against x1.08 / 0.762). Per-zone correlation at 1/4:
+hotspot 0.953, object 0.657, far field 0.448 — degraded, but never zero.
+
+Two limits worth recording. Coarsening past 1/4 stops paying: at 1/6 the
+far-field pass is no longer the bottleneck, so runtime flattens (58.8 s ->
+60.7 s) while fidelity keeps falling — a coarsening optimum, the mirror of
+mesh convergence. And on the hands clip the moving object already fills
+57.9% of the frame, leaving only 1.2% of the motion energy in the far
+field, so there is nothing for coarsening to buy: bbox x1.45/0.979 edges
+out LOD 1/4 x1.34/0.962. Graded resolution pays exactly when significant
+motion lives outside a compact hotspot.
