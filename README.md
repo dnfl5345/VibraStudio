@@ -145,6 +145,36 @@ R² 0.752를, MAC 0.920(거의 맞음)이 R² 0.458을 냅니다.
 카메라가 완전히 정지해 MAC 0.982로 형상을 맞추는 경우에도 **진폭은 약 43%
 과소 보고**(gain 0.58)됩니다. 절대 진폭은 별도 교정 없이 인용하면 안 됩니다.
 
+### 가속도계 없이 검증하기
+
+`tools/ods_sensorless_validation.py` 는 기준 센서 없이 쓸 수 있는 네 가지
+내부 일관성 검사를 제공합니다. 각각 "진짜 변형"과 "잔류 카메라 운동"이
+다르게 답하는 질문입니다.
+
+| 검사 | 걸러내는 것 | 필요한 것 |
+|---|---|---|
+| **static** | 장면 운동 (직접) | 영상 1개 |
+| **split-half** | 비정상성·플로우 노이즈 | 영상 1개 |
+| **repeat** | 카메라 아티팩트 (거의 결정적) | **독립 녹화 2개** |
+| **order** | 축 회전수를 모르는 모든 것 | 영상 1개 + 회전수 |
+
+**repeat** 이 촬영 방식을 바꿀 만한 가치가 있는 검사입니다. 서로 다른 녹화
+두 개에서 독립적으로 복원해 MAC을 계산합니다. 카메라 운동은 녹화 간
+무상관이지만 기계의 변형 형상은 그렇지 않습니다. **order** 는 회전기기라면
+거의 공짜입니다 — 1800 rpm이면 정확히 30.0 Hz이고, 건물 진동·손떨림·롤링
+셔터는 축 회전수를 모릅니다.
+
+```bash
+python tools/ods_sensorless_validation.py screen *.mp4 --rpm 1800
+python tools/ods_sensorless_validation.py pair run1.mp4 run2.mp4 --rpm 1800
+```
+
+⚠️ **split-half는 필요조건이지 충분조건이 아닙니다.** 두 반쪽이 같은 카메라를
+공유하므로 안정된 카메라 운동은 MAC 1.000으로 통과합니다. 실측 모터 클립이
+정확히 그렇습니다.
+
+확보 가능한 영상 목록과 스크리닝 결과:
+[docs/ods_validation/CLIPS.md](docs/ods_validation/CLIPS.md).
 전체 진단·수치·선행연구: [docs/ods_validation/](docs/ods_validation/),
 논문화 가능성 평가: [docs/paper/](docs/paper/).
 
