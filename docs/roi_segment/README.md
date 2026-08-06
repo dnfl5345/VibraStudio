@@ -1,0 +1,100 @@
+# ROI selection strategies for phase-based motion magnification
+
+`full` magnifies every pixel; `bbox` keeps the largest band-power hotspot rectangle; `segment` grows SLIC superpixels from motion seeds into colour-similar neighbours and magnifies one crop per component.
+
+**captured motion** = share of the full-frame magnified-motion energy that falls inside the ROI; the remainder is motion the ROI drops.
+
+| clip | mode | time (s) | speedup | Mpx | ROI area | captured motion | r (in-ROI) |
+|---|---|---|---|---|---|---|---|
+| motor (600x690, 120fr, 5.0-7.0 Hz) | full | 302.5 | x1.00 | 49.7 | 100.0% | 100.0% | 1.0000 |
+| motor (600x690, 120fr, 5.0-7.0 Hz) | bbox | 65.2 | x4.64 | 14.6 | 21.7% | 40.7% | 0.9739 |
+| motor (600x690, 120fr, 5.0-7.0 Hz) | segment | 278.9 | x1.08 | 40.7 | 35.9% | 63.2% | 0.9590 |
+| hands (640x480, 120fr, 0.3-1.0 Hz) | full | 210.1 | x1.00 | 36.9 | 100.0% | 100.0% | 1.0000 |
+| hands (640x480, 120fr, 0.3-1.0 Hz) | bbox | 145.1 | x1.45 | 27.0 | 57.9% | 96.0% | 0.9992 |
+| hands (640x480, 120fr, 0.3-1.0 Hz) | segment | 164.9 | x1.27 | 27.2 | 35.8% | 94.1% | 0.9930 |
+
+## What the numbers say
+
+**Segmentation fixes coverage, not cost.** On the motor clip the hotspot
+rectangle magnifies only 40.7% of the moving content — it sits on the
+textured cooling fins and drops the smooth flange and shaft that move with
+them. Growing SLIC superpixels from those seeds into colour-similar
+neighbours pulls the whole casing in and raises captured motion to 63.2%.
+
+**Cost follows the bounding box, not the mask.** A steerable pyramid needs
+a rectangle, so a diagonal object pays for the empty corners of its box:
+the motor mask covers 35.9% of the frame but its crop is 81.9% of the
+pixels (fill ratio 0.44), which collapses the speedup from x4.64 to x1.08.
+The hands clip shows the same ratio (mask 35.8%, crop 73.7%, fill 0.49).
+
+**When the object already fills the frame, no ROI scheme saves much.** On
+the hands clip the hotspot box alone already captures 96.0% of the motion,
+and segmentation costs more pixels for slightly less coverage — bbox is
+strictly better there. Tiling the mask does not rescue this at these frame
+sizes: with a 32 px anti-ringing pad, 192 px tiles carry ~1.8x overhead, so
+the tiled cost exceeds the single box for objects this large.
+
+**Fidelity is never the problem.** Both ROI modes reproduce the full-frame
+result inside the ROI to r >= 0.96 (bbox 0.974 / 0.999, segment 0.959 /
+0.993), so the choice is purely coverage vs cost.
+
+Practical reading: use segmentation when the goal is *selectivity* —
+suppressing background magnification, or restricting ODS analysis to the
+structure — and reach for a cheaper transform (Riesz pyramid, band-limited
+temporal filtering, pyramid-level pruning) when the goal is speed. ROI
+cropping only pays as a speed measure when the object is small relative to
+the frame and its bounding box is well filled.
+
+## Prior art
+
+Selective, segmentation-driven magnification is not new. *Interest Region
+Based Motion Magnification* (Springer, 2017) extracts the object with
+kernel K-means plus superpixel scribbles and alpha matting before Eulerian
+magnification, motivated by noise rejection and user focus rather than
+compute. In the vibration domain, vibration-guided superpixel segmentation
+has been used to place virtual sensor grids, and notes that ROI extraction
+lowers computational complexity and improves robustness. What is less
+common in that literature is a head-to-head cost/coverage benchmark of the
+selection strategies themselves, which is what this study measures.
+
+## Graded resolution (LOD) — the FEM-mesh answer
+
+The box/segment study ends in a bind: cost follows the crop rectangle, and
+whatever falls outside it is dropped entirely. Grading the *resolution* the
+pyramid sees escapes that, the same way a finite element mesh is dense
+where the field varies and coarse in the far field. Note the direction —
+refining a region cannot help (phase accuracy comes from the pyramid band,
+not the pixel count) while coarsening one saves as 1/s^2, so the win is in
+the far field. `tools/lod_magnify.py` uses three zones: full resolution on
+the motion hotspot, 1/2 on the rest of the object, 1/s on everything else.
+Zones composite through the residual (magnified - original), which is
+band-limited and therefore survives upsampling, with feathered weights
+acting as transition elements.
+
+Motor clip (600x690, 120 fr, 5-7 Hz), whole-frame motion reproduced:
+
+| strategy | speedup | motion reproduced |
+|---|---|---|
+| LOD 1/4 | **x4.85** | **0.714** |
+| LOD 1/6 | x4.70 | 0.663 |
+| bbox | x4.64 | 0.621 |
+| LOD 1/3 | x4.14 | 0.748 |
+| LOD 1/2 | x3.10 | 0.808 |
+| segment | x1.08 | 0.762 |
+| full | x1.00 | 1.000 |
+
+**LOD dominates both hard-ROI strategies on this clip.** LOD 1/4 is faster
+than the box (x4.85 vs x4.64) *and* reproduces more of the motion (0.714 vs
+0.621), because the box's 59% of dropped motion energy is worth less than a
+coarse rendition of it. LOD 1/2 beats the segmentation mask on both axes at
+once (x3.10 / 0.808 against x1.08 / 0.762). Per-zone correlation at 1/4:
+hotspot 0.953, object 0.657, far field 0.448 — degraded, but never zero.
+
+Two limits worth recording. Coarsening past 1/4 stops paying: at 1/6 the
+far-field pass is no longer the bottleneck, so runtime flattens (58.8 s ->
+60.7 s) while fidelity keeps falling — a coarsening optimum, the mirror of
+mesh convergence. And on the hands clip the moving object already fills
+57.9% of the frame, leaving only 1.2% of the motion energy in the far
+field, so there is nothing for coarsening to buy: bbox x1.45/0.979 edges
+out LOD 1/4 x1.34/0.962. Graded resolution pays exactly when significant
+motion lives outside a compact hotspot.

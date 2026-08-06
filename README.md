@@ -66,6 +66,64 @@ python -m venv .venv312
    `Build Structure` → `Auto-map Channels`(X+Z / X+Y+Z / 단축 매핑). 예: Cylinder, 12 nodes/ring, 2 layers
    = 12노드×2층 원통. 매핑은 채널 테이블의 Pt(노드 id)·Dir 열로 직접 수정 가능하며 Save Config에 함께 저장됨
 
+## 모션 벡터 → 3D ODS 복원 (오프라인 도구)
+
+모션 증폭 장비(RDI Iris M 등)가 출력한 모션 벡터(또는 그 영상)를 입력으로,
+ODS 뷰와 같은 원통(cylinder) 노드-링크 구조 위에 3차원 ODS를 복원하고
+애니메이션(GIF/MP4)으로 내보내는 헤드리스 도구입니다.
+
+```bash
+python tools/ods_from_motion_vectors.py --demo                    # 회전기기(원통)
+python tools/ods_from_motion_vectors.py --demo --structure deck   # 교량 상판(grid)
+python tools/ods_from_motion_vectors.py --video machine.mp4       # 영상 → optical flow
+python tools/ods_from_motion_vectors.py --npz vectors.npz         # 장비 내보내기 데이터
+
+# 실측 예시: 모터 리그 6 Hz 가진 영상 (ROI=케이싱, 기준영역=플레이트로
+# 카메라 흔들림 공통모드 제거, 축 기울기 15.3° 정렬, 원본 오버레이 비교)
+python tools/ods_from_motion_vectors.py --video test_vib_6hz.mp4 \
+    --roi 280,130,600,470 --ref-roi 20,60,230,420 --angle 15.3 \
+    --overlay --overlay-gain 8 --out docs/ods_restoration/motor_6hz
+
+# 교량 종단간 검증: 합성 교량 영상 생성 → 복원 → 원본 오버레이
+python tools/make_bridge_test_video.py bridge_synth.mp4
+python tools/ods_from_motion_vectors.py --video bridge_synth.mp4 \
+    --structure deck --roi 40,165,600,215 --overlay --overlay-gain 4 \
+    --out docs/ods_restoration/bridge_video
+```
+
+`--overlay`는 복원된 노드-링크 형상을 단일 스펙트럼 성분으로 프레임별 재구성해
+원본 영상 위에 위상 동기로 투영합니다(증폭 배율 화면 표기). 재구성 vs 실측
+시계열 상관을 위상 동기 지표로 출력합니다(합성 교량 r=0.988, 실측 모터 r=0.891).
+
+### ROI 선별 위상 증폭 (CSP 연산량 절감 연구)
+
+`tools/roi_motion_magnify.py` — 비서브샘플링 complex steerable pyramid 기반
+위상 증폭을 전체 프레임 vs 자동 ROI(저해상도 대역 파워 사전 스캔 → 최대
+핫스팟 bbox → 미러 패딩 증폭 → 코사인 페더 블렌딩) 두 모드로 실행하고 정량
+비교합니다. 실측 모터 영상(120fr 600×690, 5–7 Hz, ×15): 전체 384.5 s →
+ROI(프레임의 21.7%) 78.9 s로 **4.9× 고속화**, ROI 내부 충실도 r=0.9999
+(NRMSE 0.14%). 결과: [docs/ods_restoration/roi_magnify/](docs/ods_restoration/roi_magnify/)
+
+`tools/roi_segment_benchmark.py`는 여기에 **rough segmentation ROI**(SLIC
+슈퍼픽셀을 모션 시드에서 색 유사 이웃으로 성장)를 더해 full/bbox/segment
+세 전략을 같은 클립에서 비교하고, ROI가 놓친 모션 비율(captured motion
+energy)까지 측정합니다. 모터·손 트래킹 두 영상 결과와 해석:
+[docs/roi_segment/](docs/roi_segment/) — 요약하면 세그멘테이션은 **포착률을
+고치지만(40.7%→63.2%) 속도는 고치지 못합니다**(비용이 마스크 면적이 아니라
+그 bounding box에 비례하기 때문).
+
+측정점별 FFT로 지배 주파수의 복소 진폭·위상을 뽑고(spectral ODS), 축방향
+스테이션(링)별 최소자승 적합으로 축방향·수직 병진과 n=2 타원화를 분리해
+원통 노드에 전개합니다. 단일 카메라 시점이라 화면 수직(Y) 병진 성분은 관측
+불가하며 0으로 둡니다. 결과 예시: [docs/ods_restoration/](docs/ods_restoration/)
+
+교량(`--structure deck`)은 grid 템플릿 위에 스테이션별 수직 굽힘 dZ·종방향
+dX·단면 회전 θ를 적합하며, 독립 적합된 θ가 보 이론의 d(dZ)/dx를 따라가는지가
+복원의 내부 일관성 지표가 됩니다(데모 r=0.993).
+
+![ODS restoration](docs/ods_restoration/ods_cylinder_restoration.gif)
+![Bridge deck ODS restoration](docs/ods_restoration/ods_deck_restoration.gif)
+
 ## 아키텍처
 
 ```
