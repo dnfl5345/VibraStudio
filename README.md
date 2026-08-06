@@ -104,6 +104,14 @@ python tools/ods_from_motion_vectors.py --video bridge_synth.mp4 \
 ROI(프레임의 21.7%) 78.9 s로 **4.9× 고속화**, ROI 내부 충실도 r=0.9999
 (NRMSE 0.14%). 결과: [docs/ods_restoration/roi_magnify/](docs/ods_restoration/roi_magnify/)
 
+`tools/roi_segment_benchmark.py`는 여기에 **rough segmentation ROI**(SLIC
+슈퍼픽셀을 모션 시드에서 색 유사 이웃으로 성장)를 더해 full/bbox/segment
+세 전략을 같은 클립에서 비교하고, ROI가 놓친 모션 비율(captured motion
+energy)까지 측정합니다. 모터·손 트래킹 두 영상 결과와 해석:
+[docs/roi_segment/](docs/roi_segment/) — 요약하면 세그멘테이션은 **포착률을
+고치지만(40.7%→63.2%) 속도는 고치지 못합니다**(비용이 마스크 면적이 아니라
+그 bounding box에 비례하기 때문).
+
 측정점별 FFT로 지배 주파수의 복소 진폭·위상을 뽑고(spectral ODS), 축방향
 스테이션(링)별 최소자승 적합으로 축방향·수직 병진과 n=2 타원화를 분리해
 원통 노드에 전개합니다. 단일 카메라 시점이라 화면 수직(Y) 병진 성분은 관측
