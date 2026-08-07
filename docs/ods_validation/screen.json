@@ -42,12 +42,14 @@
      233
     ]
    ],
-   "amp_active": 1.6454575338428103,
-   "amp_static": 0.9538656135869203,
-   "static_ratio": 1.7250412536156166,
+   "auto": true,
+   "check_roi": null,
+   "amp_active": 1.5031524250813835,
+   "amp_static": NaN,
+   "static_ratio": NaN,
    "split_half_mac": 0.8269593172110103,
    "r2": 0.31090826475504996,
-   "verdict": "REJECT (not separable from scene motion)"
+   "verdict": "REJECT (does not reproduce within its own recording)"
   },
   {
    "clip": "random_real_video_clip.mp4",
@@ -90,12 +92,19 @@
      465
     ]
    ],
-   "amp_active": 0.16386949354190444,
-   "amp_static": 0.045565130769890105,
-   "static_ratio": 3.5963793096406746,
+   "auto": true,
+   "check_roi": [
+    0,
+    464,
+    633,
+    473
+   ],
+   "amp_active": 0.20011848332150478,
+   "amp_static": 0.10097263325319364,
+   "static_ratio": 1.9819081356400625,
    "split_half_mac": null,
    "note": "only 23 frames; split-half needs >= 48",
-   "verdict": "INCONCLUSIVE (too short)"
+   "verdict": "REJECT (not separable from scene motion)"
   },
   {
    "clip": "node_link_test_input_small.mp4",
@@ -138,9 +147,16 @@
      233
     ]
    ],
-   "amp_active": 4.950031688725591,
-   "amp_static": 4.988669152400915,
-   "static_ratio": 0.9922549556815713,
+   "auto": true,
+   "check_roi": [
+    304,
+    120,
+    313,
+    169
+   ],
+   "amp_active": 0.934674356991629,
+   "amp_static": 0.7451897959746356,
+   "static_ratio": 1.2542769131307898,
    "split_half_mac": null,
    "note": "only 11 frames; split-half needs >= 48",
    "verdict": "REJECT (not separable from scene motion)"
@@ -186,9 +202,16 @@
      473
     ]
    ],
-   "amp_active": 4.282549705854948,
-   "amp_static": 1.8717713300613217,
-   "static_ratio": 2.2879662900460422,
+   "auto": true,
+   "check_roi": [
+    312,
+    232,
+    633,
+    241
+   ],
+   "amp_active": 4.095976963415797,
+   "amp_static": 1.7380702839427116,
+   "static_ratio": 2.356623320274662,
    "split_half_mac": 0.012389934571421166,
    "r2": 0.2938259756962649,
    "verdict": "REJECT (does not reproduce within its own recording)"
@@ -234,12 +257,19 @@
      473
     ]
    ],
-   "amp_active": 1.8831623369824748,
-   "amp_static": 0.6051480157410031,
-   "static_ratio": 3.1119036797576616,
+   "auto": true,
+   "check_roi": [
+    304,
+    0,
+    633,
+    217
+   ],
+   "amp_active": 1.7332253730300813,
+   "amp_static": 0.9991784411074682,
+   "static_ratio": 1.7346504905660405,
    "split_half_mac": 0.2828286865832204,
    "r2": 0.21865403492425467,
-   "verdict": "REJECT (does not reproduce within its own recording)"
+   "verdict": "REJECT (not separable from scene motion)"
   },
   {
    "clip": "test_vib_6hz.mp4",
@@ -282,12 +312,14 @@
      689
     ]
    ],
-   "amp_active": 2.14817227783641,
-   "amp_static": 0.7326959749381691,
-   "static_ratio": 2.9318739986495634,
+   "auto": true,
+   "check_roi": null,
+   "amp_active": 0.7735914414603583,
+   "amp_static": NaN,
+   "static_ratio": NaN,
    "split_half_mac": 0.9999645149769563,
    "r2": 0.22109326762775627,
-   "verdict": "USABLE (needs a repeat recording to confirm)"
+   "verdict": "UNCONFIRMED (auto regions; give --roi/--ref-roi to decide)"
   }
  ]
 }

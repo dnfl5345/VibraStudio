@@ -42,14 +42,17 @@ python tools/ods_sensorless_validation.py screen *.mp4
 | random_real_video_clip.mp4 | 640×480 | 20 | 23 | 1.74 Hz | 1.98× | — | REJECT (not separable) |
 | node_link_test_input_small.mp4 | 320×240 | 20 | 11 | 1.82 Hz | 1.25× | — | REJECT (not separable) |
 | weld_hand_dual_…120310.mp4 | 640×480 | 15 | 240 | 0.56 Hz | 2.36× | 0.012 | REJECT (no reproduction) |
-| weld_hand_dual_…122220.mp4 | 640×480 | 15 | 240 | 0.62 Hz | — | 0.283 | REJECT (no reproduction) |
-| **test_vib_6hz.mp4** (hand-picked regions) | 690×600 | 30 | 119 | 6.05 Hz | **0.44×** | 1.000 | **REJECT (not separable)** |
+| weld_hand_dual_…122220.mp4 | 640×480 | 15 | 240 | 0.62 Hz | 1.73× | 0.283 | REJECT (not separable) |
+| test_vib_6hz.mp4 *(auto regions)* | 600×690 | 30 | 119 | 6.05 Hz | n/a | 1.000 | UNCONFIRMED |
+| **test_vib_6hz.mp4** *(hand-picked)* | 690×600 | 30 | 119 | 6.05 Hz | **0.44×** | 1.000 | **REJECT (not separable)** |
 
 Ratios are measured after the affine scene-motion removal — see below for why
-that matters. `ods_10.0Hz.mp4` reports no ratio because its active region
-leaves no held-out cells; the split-half result decides it anyway. The
-`…122220` ratio is omitted rather than guessed: its screening run had not
-finished, and split-half already rejects it.
+that matters. `ods_10.0Hz.mp4` and the auto-region motor row report no ratio
+because their active box leaves no held-out cells; split-half decides the
+first, and the hand-picked row decides the second.
+
+The two motor rows are the same clip screened two ways, and they are the
+reason auto-region runs no longer return a verdict.
 
 **Nothing reachable passes.** Every clip fails on the scene-motion ratio, on
 reproduction within its own recording, or on being too short.
