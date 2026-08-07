@@ -1,5 +1,13 @@
 # Can this be written up? An honest assessment
 
+> **Draft in progress: [`draft.md`](draft.md).** The analysis section below
+> called for showing "analytically that a low-order structural basis spans
+> the affine fields produced by camera rotation." That is now done and is
+> sharper than expected: camera translation and image shear are fitted at
+> R² = 1.0000 **exactly**, camera roll converges to 1 as station binning is
+> refined, and a genuine cantilever deflection fits *worse* (0.9774) than
+> pure camera motion does. See `tools/ods_identifiability.py`.
+
 Short answer: **not as "3D ODS restoration from single-view motion vectors."**
 That framing is neither novel enough nor supported by the current results. But
 one piece of the work is publishable, and it is the piece that came out of
