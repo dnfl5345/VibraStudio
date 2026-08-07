@@ -183,6 +183,16 @@ $\sin 3\theta$** — and any camera motion whose $v$ does not vary with $z$
 We fed the fitter camera fields containing **zero machine deflection** and
 recorded the R² it returned (`tools/ods_identifiability.py`).
 
+![Figure 1](figs/fig1_identifiability.png)
+
+**Figure 1** — (a) Model fit R² for pure camera fields with no machine
+deflection present; the vertical line marks where a genuine cantilever
+deflection fits. Two camera fields are fitted *perfectly*, and three fit
+better than the real deflection does. (b) Refining the axial station count
+separates the two kinds of shortfall: roll and $\partial v/\partial x$
+converge to 1, so their residual was only binning width, while zoom
+plateaus at the $\sin 3\theta$ drag predicted in §4.1.
+
 **Table 1** — R² for pure camera fields, no machine deflection present.
 
 | camera field | R² (+rocking) | R² (no rocking) |
@@ -274,6 +284,13 @@ method's.
 
 ### 5.2 Results
 
+![Figure 2](figs/fig2_controlled.png)
+
+**Figure 2** — (a) Shape fidelity against injected camera motion for the
+three compensation modes. (b) The same 15 runs plotted as reported
+statistic against actual correctness; a useful self-check would trend up and
+to the right, and this one does not.
+
 **Table 3** — MAC against the injected shape.
 
 | scene motion | detrend: none | mean | **affine** |
@@ -338,6 +355,25 @@ deflection shape with a drive-end-to-free-end amplitude growth of
 R² = 0.99.
 
 ### 6.2 What the clip actually contains
+
+![Figure 3](figs/fig3_field.png)
+
+**Figure 3** — (a) 6 Hz amplitude by region on the motor clip, before and
+after affine compensation. Regions marked static are not attached to the
+rig. In the raw field the wall out-moves the motor casing (1.91 vs 1.58 px);
+the floor does not, being nearer the quiet end of the camera gradient. After
+compensation **both** static regions retain more than the casing (0.71 and
+0.60 vs 0.32 px), which is the comparison that matters — it is the residual
+the restoration actually works from. (b) Varying only the quality of the
+compensation traces out the inversion: the fit statistic climbs as the
+answer gets worse.
+
+Panel (a) is recomputed at figure time on a coarser grid than Tables 5–6,
+which used per-region hand-placed boxes; the two agree to within a few
+hundredths of a pixel where the regions coincide (floor 0.602 vs 0.60,
+pulley 0.280 vs 0.27) and differ where they do not (Table 5's third static
+region is the aluminium extrusion, high in the frame; the figure's is the
+floor, lower and quieter).
 
 Fitting a complex affine field to the whole frame at the analysis line
 explains **83% of the 6 Hz band energy**. Measured region by region on the
@@ -528,6 +564,12 @@ of validity is that the model fitted well.
 | Tables 3–4 | `python tools/ods_synthetic_validation.py --base frame.png --machine 135,25,475,330 --amp 2.0 --sweep --shears 0,0.25,0.5,1.0,2.0` |
 | Tables 5–7, §6 | `python tools/ods_from_motion_vectors.py --video test_vib_6hz.mp4 --rotate 90 --flow-mode direct --detrend affine --roi 135,25,330,330 --ref-roi "0,400,260,600;600,0,690,200;0,0,90,175" --check-roi 430,0,560,70` |
 | §7 checks | `python tools/ods_sensorless_validation.py screen *.mp4 --rpm 1800` |
+| Figures 1–3 | `python tools/paper_figures.py --out docs/paper/figs --video test_vib_6hz.mp4` |
+
+Figures 1 and 3 are computed at figure time from the identifiability
+experiment and the clip itself; Figure 2 is read from the stored sweep in
+`docs/ods_validation/validation.json`. The only transcribed numbers in any
+figure are Table 7's compensation-quality sweep, in Figure 3(b).
 
 Supporting data and figures: `docs/ods_validation/`. Clip survey and
 screening results: `docs/ods_validation/CLIPS.md`.
