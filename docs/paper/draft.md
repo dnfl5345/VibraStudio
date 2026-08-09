@@ -84,25 +84,31 @@ statistic produced a confidently wrong result that we retract (§6).
 
 **ODS from video.** Extraction of operating deflection shapes directly from
 optical flow, with automatic masking and frame-wise fusion, is established
-[Machynia et al., *Sensors* 2021]. Phase-based Eulerian motion magnification
-has been used to visualise ODS at magnifications up to ×400 and to identify
-modal parameters of civil structures [Chen et al., IMAC 2015]. Commercial
+[1]. Phase-based Eulerian motion magnification has been used to visualise
+ODS and to identify modal parameters of civil structures [2, 5], building on
+the phase-based motion processing of [6]. Commercial
 systems (RDI Iris M, gfaitech WaveCam) productise the workflow.
 
 **3D ODS from cameras.** A single 2D view cannot resolve motion along the
 optical axis. Frequency-domain triangulation and multiview Spectral Optical
 Flow Imaging recover full-field 3D ODS using multiple views precisely for
-this reason [Gorjup, Slavič, Boltežar]. Fitting a single view to a
+this reason [3, 4]. Fitting a single view to a
 parametric 3D geometry, as studied here, is the cheap alternative — and, as
 §4 shows, the one that opens the identifiability hole.
 
-**Camera motion compensation.** That camera ego-motion can dominate measured
-structural vibration is well known in vision-based structural health
-monitoring, and compensation using static reference regions — affine or
-homography transforms estimated on reference templates outside the structure
-— is standard practice. Our contribution is not the compensation itself but
-the demonstration that its *absence* is rewarded by the fit statistic, so a
-pipeline missing it receives no warning and in fact receives encouragement.
+**Camera motion compensation.** Compensating camera ego-motion using static
+reference regions outside the structure — affine or homography transforms
+estimated on reference templates — is standard practice in vision-based
+structural health monitoring [5], and the recent literature treats residual
+ego-motion as a first-order error source rather than a nuisance.<sup>†</sup>
+§6 measures it dominating outright: 83% of the band energy on our field
+clip, moving the static background more than the machine. Our contribution
+is not the compensation itself but the demonstration that its *absence* is
+rewarded by the fit statistic, so a pipeline missing it receives no warning
+and in fact receives encouragement.
+
+<sup>†</sup> *To cite: MSSP **204**, 110754, 2023 — locator verified, author
+list not yet retrieved.*
 
 **Goodness-of-fit critiques.** That R² rewards added parameters and does not
 establish model correctness is elementary statistics. What is specific here
@@ -578,18 +584,45 @@ screening results: `docs/ods_validation/CLIPS.md`.
 
 ## References
 
-*(to be completed — currently identified from survey)*
+1. A. Machynia, Z. Dworakowski, K. Dziedziech, P. Zdziebko, J. Konieczny,
+   K. Holak. Operational Deflection Shapes Magnification and Visualization
+   Using Optical-Flow-Based Image Processing. *Sensors* **21**(24), 8351,
+   2021. doi:10.3390/s21248351
+2. J. G. Chen, N. Wadhwa, F. Durand, W. T. Freeman, O. Büyüköztürk.
+   Developments with Motion Magnification for Structural Modal
+   Identification Through Camera Video. In: J. Caicedo, S. Pakzad (eds),
+   *Dynamics of Civil Structures, Volume 2*, Conference Proceedings of the
+   Society for Experimental Mechanics Series, Springer, Cham, 2015,
+   pp. 49–57. doi:10.1007/978-3-319-15248-6_5
+3. D. Gorjup, J. Slavič, A. Babnik, M. Boltežar. Still-camera multiview
+   Spectral Optical Flow Imaging for 3D operating-deflection-shape
+   identification. *Mechanical Systems and Signal Processing* **152**,
+   107456, 2021. doi:10.1016/j.ymssp.2020.107456
+4. D. Gorjup, J. Slavič, M. Boltežar. Frequency domain triangulation for
+   full-field 3D operating-deflection-shape identification. *Mechanical
+   Systems and Signal Processing* **133**, 106287, 2019.
+   doi:10.1016/j.ymssp.2019.106287
+5. J. G. Chen, A. Davis, N. Wadhwa, F. Durand, W. T. Freeman,
+   O. Büyüköztürk. Video Camera–Based Vibration Measurement for Civil
+   Infrastructure Applications. *Journal of Infrastructure Systems*
+   **23**(3), B4016013, 2017. doi:10.1061/(ASCE)IS.1943-555X.0000348
+6. N. Wadhwa, M. Rubinstein, F. Durand, W. T. Freeman. Phase-based video
+   motion processing. *ACM Transactions on Graphics* **32**(4), Article 80,
+   2013 (SIGGRAPH 2013). doi:10.1145/2461912.2461966
 
-1. Machynia, Dworakowski, Dziedziech, Zdziebko, Konieczny, Holak.
-   Operational Deflection Shapes Magnification and Visualization Using
-   Optical-Flow-Based Image Processing. *Sensors*, Dec 2021.
-2. Chen et al. Developments with Motion Magnification for Structural Modal
-   Identification Through Camera Video. *IMAC* 2015.
-3. Gorjup, Slavič, Babnik, Boltežar. Still-camera multiview Spectral Optical
-   Flow Imaging for 3D operating-deflection-shape identification. *MSSP*
-   2021.
-4. Gorjup, Slavič, Boltežar. Frequency domain triangulation for full-field
-   3D operating-deflection-shape identification. *MSSP* 2019.
-5. Feng, Feng. Video Camera–Based Vibration Measurement for Civil
-   Infrastructure Applications. *J. Infrastructure Systems* 23(3), 2017.
-6. Wadhwa et al. Phase-based video motion processing. *ACM TOG* 2013.
+**Verification status.** Volume, issue, article number and DOI above were
+confirmed against publisher records for all six. Two corrections were made
+in the process: reference 5 was attributed to "Feng and Feng" in an earlier
+version and is in fact Chen et al. — the same MIT group as references 2 and
+6 — and reference 2's proceedings volume and page range were previously
+unspecified.
+
+Two items still to check against primary sources rather than secondary
+citations, neither load-bearing for any claim in this paper:
+
+* the magnification factor attributed to reference 2 in §2 comes from how
+  later papers characterise it, not from reading the original;
+* references 3 and 4 are cited for the general claim that multiple views are
+  used because a single view cannot resolve optical-axis motion, which is
+  stated in their abstracts; the specific formulations should be checked
+  before any closer comparison is drawn.
