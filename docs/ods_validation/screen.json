@@ -1,0 +1,325 @@
+{
+ "mode": "screen",
+ "rows": [
+  {
+   "clip": "ods_10.0Hz.mp4",
+   "size": [
+    320,
+    240
+   ],
+   "fps": 30.0,
+   "frames": 59,
+   "f0": 0.5084745762711864,
+   "roi": [
+    16,
+    32,
+    313,
+    233
+   ],
+   "refs": [
+    [
+     0,
+     0,
+     153,
+     113
+    ],
+    [
+     160,
+     0,
+     313,
+     113
+    ],
+    [
+     0,
+     120,
+     153,
+     233
+    ],
+    [
+     160,
+     120,
+     313,
+     233
+    ]
+   ],
+   "auto": true,
+   "check_roi": null,
+   "amp_active": 1.5031524250813835,
+   "amp_static": NaN,
+   "static_ratio": NaN,
+   "split_half_mac": 0.8269593172110103,
+   "r2": 0.31090826475504996,
+   "verdict": "REJECT (does not reproduce within its own recording)"
+  },
+  {
+   "clip": "random_real_video_clip.mp4",
+   "size": [
+    640,
+    480
+   ],
+   "fps": 20.0,
+   "frames": 23,
+   "f0": 1.7391304347826084,
+   "roi": [
+    0,
+    112,
+    633,
+    457
+   ],
+   "refs": [
+    [
+     0,
+     0,
+     313,
+     233
+    ],
+    [
+     320,
+     0,
+     633,
+     233
+    ],
+    [
+     0,
+     240,
+     313,
+     457
+    ],
+    [
+     328,
+     240,
+     633,
+     465
+    ]
+   ],
+   "auto": true,
+   "check_roi": [
+    0,
+    464,
+    633,
+    473
+   ],
+   "amp_active": 0.20011848332150478,
+   "amp_static": 0.10097263325319364,
+   "static_ratio": 1.9819081356400625,
+   "split_half_mac": null,
+   "note": "only 23 frames; split-half needs >= 48",
+   "verdict": "REJECT (not separable from scene motion)"
+  },
+  {
+   "clip": "node_link_test_input_small.mp4",
+   "size": [
+    320,
+    240
+   ],
+   "fps": 20.0,
+   "frames": 11,
+   "f0": 1.8181818181818181,
+   "roi": [
+    32,
+    176,
+    313,
+    233
+   ],
+   "refs": [
+    [
+     0,
+     0,
+     153,
+     113
+    ],
+    [
+     160,
+     0,
+     313,
+     113
+    ],
+    [
+     0,
+     120,
+     153,
+     233
+    ],
+    [
+     160,
+     120,
+     297,
+     233
+    ]
+   ],
+   "auto": true,
+   "check_roi": [
+    304,
+    120,
+    313,
+    169
+   ],
+   "amp_active": 0.934674356991629,
+   "amp_static": 0.7451897959746356,
+   "static_ratio": 1.2542769131307898,
+   "split_half_mac": null,
+   "note": "only 11 frames; split-half needs >= 48",
+   "verdict": "REJECT (not separable from scene motion)"
+  },
+  {
+   "clip": "weld_hand_dual_20260707_120310.mp4",
+   "size": [
+    640,
+    480
+   ],
+   "fps": 15.0,
+   "frames": 240,
+   "f0": 0.5625,
+   "roi": [
+    296,
+    248,
+    633,
+    473
+   ],
+   "refs": [
+    [
+     0,
+     0,
+     313,
+     233
+    ],
+    [
+     320,
+     0,
+     633,
+     225
+    ],
+    [
+     0,
+     240,
+     305,
+     473
+    ],
+    [
+     496,
+     368,
+     633,
+     473
+    ]
+   ],
+   "auto": true,
+   "check_roi": [
+    312,
+    232,
+    633,
+    241
+   ],
+   "amp_active": 4.095976963415797,
+   "amp_static": 1.7380702839427116,
+   "static_ratio": 2.356623320274662,
+   "split_half_mac": 0.012389934571421166,
+   "r2": 0.2938259756962649,
+   "verdict": "REJECT (does not reproduce within its own recording)"
+  },
+  {
+   "clip": "weld_hand_dual_20260707_122220.mp4",
+   "size": [
+    640,
+    480
+   ],
+   "fps": 15.0,
+   "frames": 240,
+   "f0": 0.625,
+   "roi": [
+    312,
+    152,
+    633,
+    473
+   ],
+   "refs": [
+    [
+     0,
+     0,
+     297,
+     233
+    ],
+    [
+     536,
+     0,
+     633,
+     73
+    ],
+    [
+     0,
+     240,
+     313,
+     473
+    ],
+    [
+     336,
+     336,
+     633,
+     473
+    ]
+   ],
+   "auto": true,
+   "check_roi": [
+    304,
+    0,
+    633,
+    217
+   ],
+   "amp_active": 1.7332253730300813,
+   "amp_static": 0.9991784411074682,
+   "static_ratio": 1.7346504905660405,
+   "split_half_mac": 0.2828286865832204,
+   "r2": 0.21865403492425467,
+   "verdict": "REJECT (not separable from scene motion)"
+  },
+  {
+   "clip": "test_vib_6hz.mp4",
+   "size": [
+    600,
+    690
+   ],
+   "fps": 30.0,
+   "frames": 119,
+   "f0": 6.050420168067227,
+   "roi": [
+    520,
+    0,
+    593,
+    689
+   ],
+   "refs": [
+    [
+     0,
+     0,
+     297,
+     345
+    ],
+    [
+     304,
+     0,
+     593,
+     345
+    ],
+    [
+     0,
+     352,
+     297,
+     689
+    ],
+    [
+     304,
+     352,
+     593,
+     689
+    ]
+   ],
+   "auto": true,
+   "check_roi": null,
+   "amp_active": 0.7735914414603583,
+   "amp_static": NaN,
+   "static_ratio": NaN,
+   "split_half_mac": 0.9999645149769563,
+   "r2": 0.22109326762775627,
+   "verdict": "UNCONFIRMED (auto regions; give --roi/--ref-roi to decide)"
+  }
+ ]
+}

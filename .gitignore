@@ -1,23 +1,21 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv*/
-venv/
-
-# IDE
-.vscode/
-.idea/
 
 # App output
-outputs/
-recordings/
-*.npz
-
+# IDE
+# OS
 # PyInstaller
+# Python
+*.egg-info/
+*.npz
+*.py[cod]
+.DS_Store
+.idea/
+.venv*/
+.vscode/
+Thumbs.db
+__pycache__/
 build/
 dist/
-
-# OS
-Thumbs.db
-.DS_Store
+docs/ods_validation/synth_shear*.mp4
+outputs/
+recordings/
+venv/

@@ -78,11 +78,16 @@ python tools/ods_from_motion_vectors.py --demo --structure deck   # 교량 상�
 python tools/ods_from_motion_vectors.py --video machine.mp4       # 영상 → optical flow
 python tools/ods_from_motion_vectors.py --npz vectors.npz         # 장비 내보내기 데이터
 
-# 실측 예시: 모터 리그 6 Hz 가진 영상 (ROI=케이싱, 기준영역=플레이트로
-# 카메라 흔들림 공통모드 제거, 축 기울기 15.3° 정렬, 원본 오버레이 비교)
+# 실측 예시: 모터 리그 6 Hz 가진 영상. 클립이 시계방향 90° 회전 저장되어
+# 있으므로 --rotate 90 으로 바로 세우고, 정지 영역 여러 개로 장면 전체
+# 운동(affine)을 제거한 뒤, --check-roi 로 held-out 정지 영역과 비교한다.
 python tools/ods_from_motion_vectors.py --video test_vib_6hz.mp4 \
-    --roi 280,130,600,470 --ref-roi 20,60,230,420 --angle 15.3 \
-    --overlay --overlay-gain 8 --out docs/ods_restoration/motor_6hz
+    --rotate 90 --flow-mode direct --detrend affine \
+    --roi 135,25,330,330 \
+    --ref-roi "0,400,260,600;600,0,690,200;0,0,90,175" \
+    --check-roi 430,0,560,70 --out docs/ods_restoration/motor_6hz_checked
+# ⚠️ 이 클립은 검사 결과 "복원 불가" 로 판정된다 —
+#    아래 「검증」 절과 docs/ods_validation/ 참조.
 
 # 교량 종단간 검증: 합성 교량 영상 생성 → 복원 → 원본 오버레이
 python tools/make_bridge_test_video.py bridge_synth.mp4
@@ -93,7 +98,85 @@ python tools/ods_from_motion_vectors.py --video bridge_synth.mp4 \
 
 `--overlay`는 복원된 노드-링크 형상을 단일 스펙트럼 성분으로 프레임별 재구성해
 원본 영상 위에 위상 동기로 투영합니다(증폭 배율 화면 표기). 재구성 vs 실측
-시계열 상관을 위상 동기 지표로 출력합니다(합성 교량 r=0.988, 실측 모터 r=0.891).
+시계열 상관을 위상 동기 지표로 출력합니다(합성 교량 r=0.988).
+
+### ⚠️ 검증: 복원된 형상이 기계인가 카메라인가
+
+**모델 적합도(R²)는 타당성 지표가 아닙니다.** 원통 모델(스테이션별 병진 +
+로킹 + n=2 타원화)이 표현하는 저차 필드는 카메라 회전이 만드는 affine 필드를
+그대로 포함하므로, 장면 운동을 덜 제거할수록 R²가 **올라갑니다**. 실측 모터
+클립에서 장면 운동 제거 품질을 나쁨→좋음으로 바꾸면 R²는 0.975 → 0.353 으로
+떨어지고, 같은 구간에서 held-out 정지 영역 잔차는 3.96 px → 0.33 px 로
+좋아집니다. 즉 **가장 옳은 답이 가장 낮은 R²** 를 냅니다.
+
+그래서 두 가지 검사를 제공합니다.
+
+* `--detrend affine` — `--ref-roi` 의 정지 영역들에서 `d = a₀ + a₁x + a₂y`
+  를 적합해 프레임 전체에서 뺍니다. 기존의 평균 차감은 offset만 지우고
+  기울기를 그대로 남겼는데, 이 클립에서는 그 기울기가 대역 에너지의 83%였고
+  정지한 벽·바닥이 기계보다 **더 크게** 움직였습니다. 참조 상자는 `;` 로
+  여러 개를 줄 수 있고, 프레임을 가로질러 배치해야 합니다.
+* `--check-roi` — `--ref-roi` 에 넣지 않은 정지 영역을 지정하면 기계 대비
+  잔차 비를 출력하고, 2배 미만이면 "분리 불가"로 경고합니다.
+
+`tools/ods_synthetic_validation.py` 는 실제 정지 프레임에 **알려진** 변형
+형상과 **알려진** 카메라 roll을 주입해 영상을 만들고, 파이프라인이 복원한
+결과를 진값 대비 MAC·진폭 이득으로 채점합니다(R²와 달리 카메라 운동을
+흡수해서 올릴 수 없는 지표).
+
+```bash
+python tools/ods_synthetic_validation.py --base frame.png \
+    --machine 135,25,475,330 --amp 2.0 --sweep --shears 0,0.25,0.5,1.0,2.0 \
+    --out docs/ods_validation
+```
+
+| 장면 운동 | detrend 없음 | 평균만 | **affine** |
+|---|---|---|---|
+| 0.99 px | MAC 0.860 | 0.939 | **0.975** |
+| 1.98 px | MAC 0.611 | 0.831 | **0.965** |
+| 3.95 px | MAC 0.268 | 0.741 | **0.920** |
+| 7.90 px | MAC 0.060 | 0.717 | 0.640 |
+
+제거하지 않으면 **약 2 px의 장면 운동만으로 형상 충실도가 절반**이 되고
+(MAC 0.982 → 0.611), 4 px면 무너집니다(0.268). 실측 모터 클립은 ~2.9 px 입니다.
+15개 실행에서 R²와 진값 MAC의 상관은 **r = −0.162** — MAC 0.060(완전히 틀림)이
+R² 0.752를, MAC 0.920(거의 맞음)이 R² 0.458을 냅니다.
+
+카메라가 완전히 정지해 MAC 0.982로 형상을 맞추는 경우에도 **진폭은 약 43%
+과소 보고**(gain 0.58)됩니다. 절대 진폭은 별도 교정 없이 인용하면 안 됩니다.
+
+### 가속도계 없이 검증하기
+
+`tools/ods_sensorless_validation.py` 는 기준 센서 없이 쓸 수 있는 네 가지
+내부 일관성 검사를 제공합니다. 각각 "진짜 변형"과 "잔류 카메라 운동"이
+다르게 답하는 질문입니다.
+
+| 검사 | 걸러내는 것 | 필요한 것 |
+|---|---|---|
+| **static** | 장면 운동 (직접) | 영상 1개 |
+| **split-half** | 비정상성·플로우 노이즈 | 영상 1개 |
+| **repeat** | 카메라 아티팩트 (거의 결정적) | **독립 녹화 2개** |
+| **order** | 축 회전수를 모르는 모든 것 | 영상 1개 + 회전수 |
+
+**repeat** 이 촬영 방식을 바꿀 만한 가치가 있는 검사입니다. 서로 다른 녹화
+두 개에서 독립적으로 복원해 MAC을 계산합니다. 카메라 운동은 녹화 간
+무상관이지만 기계의 변형 형상은 그렇지 않습니다. **order** 는 회전기기라면
+거의 공짜입니다 — 1800 rpm이면 정확히 30.0 Hz이고, 건물 진동·손떨림·롤링
+셔터는 축 회전수를 모릅니다.
+
+```bash
+python tools/ods_sensorless_validation.py screen *.mp4 --rpm 1800
+python tools/ods_sensorless_validation.py pair run1.mp4 run2.mp4 --rpm 1800
+```
+
+⚠️ **split-half는 필요조건이지 충분조건이 아닙니다.** 두 반쪽이 같은 카메라를
+공유하므로 안정된 카메라 운동은 MAC 1.000으로 통과합니다. 실측 모터 클립이
+정확히 그렇습니다.
+
+확보 가능한 영상 목록과 스크리닝 결과:
+[docs/ods_validation/CLIPS.md](docs/ods_validation/CLIPS.md).
+전체 진단·수치·선행연구: [docs/ods_validation/](docs/ods_validation/),
+논문화 가능성 평가: [docs/paper/](docs/paper/).
 
 ### ROI 선별 위상 증폭 (CSP 연산량 절감 연구)
 
@@ -113,9 +196,11 @@ energy)까지 측정합니다. 모터·손 트래킹 두 영상 결과와 해석
 그 bounding box에 비례하기 때문).
 
 측정점별 FFT로 지배 주파수의 복소 진폭·위상을 뽑고(spectral ODS), 축방향
-스테이션(링)별 최소자승 적합으로 축방향·수직 병진과 n=2 타원화를 분리해
-원통 노드에 전개합니다. 단일 카메라 시점이라 화면 수직(Y) 병진 성분은 관측
-불가하며 0으로 둡니다. 결과 예시: [docs/ods_restoration/](docs/ods_restoration/)
+스테이션(링)별 최소자승 적합으로 축방향·수직 병진, 단면 로킹(φ), n=2 타원화를
+분리해 원통 노드에 전개합니다. 단일 카메라 시점이라 화면 수직(Y) 병진 성분은
+관측 불가하며 0으로 둡니다. 결과 예시:
+[docs/ods_restoration/](docs/ods_restoration/) — 다만 실측 모터 예시는 위
+「검증」 절의 이유로 물리적 해석을 붙이지 않습니다.
 
 교량(`--structure deck`)은 grid 템플릿 위에 스테이션별 수직 굽힘 dZ·종방향
 dX·단면 회전 θ를 적합하며, 독립 적합된 θ가 보 이론의 d(dZ)/dx를 따라가는지가
