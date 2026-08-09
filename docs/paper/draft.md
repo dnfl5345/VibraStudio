@@ -3,6 +3,11 @@
 **Draft v0.1** — status: analysis and controlled experiment complete; field
 case is a negative result; reference-sensor validation outstanding (§8).
 
+> Formatted for *Mechanical Systems and Signal Processing* in
+> [`mssp/`](mssp/) (elsarticle, `elsarticle-num`). This file stays the
+> readable working version; `mssp/manuscript.tex` is the submission
+> artefact — **note it has never been compiled**, see `mssp/README.md`.
+
 ---
 
 ## Abstract

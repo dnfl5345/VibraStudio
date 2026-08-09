@@ -1,0 +1,5 @@
+Camera ego-motion lies inside the span of parametric ODS models
+Model fit R^2 is anti-correlated with true shape accuracy, r = -0.162
+2 px of uncompensated scene motion halves video ODS shape fidelity
+Affine compensation on static regions holds MAC >= 0.92 to 4 px
+Four sensor-free consistency checks replace goodness-of-fit
