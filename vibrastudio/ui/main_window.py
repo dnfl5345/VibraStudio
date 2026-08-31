@@ -178,12 +178,15 @@ class MainWindow(QMainWindow):
         self.sidebar.channel_table.load(self.cfg.channels)
 
     def _on_channels_mapped(self, mapped: list) -> None:
-        """ODS auto-map rewrote node/direction assignments — sync the table."""
-        # Mapped list covers enabled channels only; merge back by label.
-        by_label = {c.label: c for c in mapped}
+        """ODS auto-map rewrote node/direction/labels — sync the table.
+
+        Merge by physical channel: auto-map renames labels (S<node>_<axis>),
+        so labels can no longer identify rows."""
+        by_phys = {c.physical_channel: c for c in mapped}
         for ch in self.cfg.channels:
-            m = by_label.get(ch.label)
+            m = by_phys.get(ch.physical_channel)
             if m is not None:
+                ch.label = m.label
                 ch.point, ch.direction, ch.position = m.point, m.direction, m.position
         self.sidebar.channel_table.load(self.cfg.channels)
         self.statusBar().showMessage(

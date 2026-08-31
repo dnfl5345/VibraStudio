@@ -28,6 +28,7 @@ class ChannelConfig:
     position: float = 0.0         # normalized position along structure [0..1]
     sensitivity_mv_g: float = 100.0
     is_reference: bool = False    # reference channel for FRF / ODS phase
+    sign: int = 1                 # +1/-1: flips a left-handed sensor axis
 
     def color(self, index: int) -> str:
         return CHANNEL_COLORS[index % len(CHANNEL_COLORS)]

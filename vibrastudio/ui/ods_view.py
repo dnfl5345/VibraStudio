@@ -94,6 +94,9 @@ class OdsView(BaseView):
         self.p2_spin = QSpinBox()
         self.p2_spin.setRange(1, 32)
         self.p2_spin.setValue(2)
+        self.wind_box = QComboBox()
+        self.wind_box.addItems(["CCW ↺", "CW ↻"])
+        self.wind_box.setToolTip("Node numbering direction for circle/cylinder\n(viewed from +Z)")
         self.build_btn = QPushButton("Build Structure")
         self.map_box = QComboBox()
         self.map_box.addItems([m[0] for m in _MAP_MODES])
@@ -149,6 +152,7 @@ class OdsView(BaseView):
         lay.addLayout(toolbar_row("Shape", self.shape_box,
                                   self.p1_label, self.p1_spin,
                                   self.p2_label, self.p2_spin,
+                                  self.wind_box,
                                   self.build_btn, self.map_box, self.map_btn,
                                   self.fix_chk, self.labels_chk,
                                   "stretch", QLabel("")))
@@ -187,14 +191,15 @@ class OdsView(BaseView):
     def _build_geometry(self) -> None:
         _, shape, *_ = _SHAPE_DEFS[self.shape_box.currentIndex()]
         p1, p2 = self.p1_spin.value(), self.p2_spin.value()
+        ccw = self.wind_box.currentIndex() == 0
         if shape == "line":
             self.geometry = build(shape, n_nodes=p1)
         elif shape == "grid":
             self.geometry = build(shape, nx=p1, ny=p2)
         elif shape == "circle":
-            self.geometry = build(shape, n_nodes=p1)
+            self.geometry = build(shape, n_nodes=p1, ccw=ccw)
         else:
-            self.geometry = build(shape, n_per_ring=p1, n_layers=p2)
+            self.geometry = build(shape, n_per_ring=p1, n_layers=p2, ccw=ccw)
         n_fixed = self.geometry.fix_base() if self.fix_chk.isChecked() else 0
         self._user_geometry = True
         self._rebuild_static()
@@ -220,6 +225,8 @@ class OdsView(BaseView):
         try:
             self.geometry = Geometry.from_dict(d)
             self._user_geometry = True
+            if "ccw" in self.geometry.params:
+                self.wind_box.setCurrentIndex(0 if self.geometry.params["ccw"] else 1)
             self._rebuild_static()
         except Exception:
             pass
@@ -387,7 +394,7 @@ class OdsView(BaseView):
             if axis is None or not (0 <= node < g.n_nodes):
                 continue
             rel = self._amp[i] / global_peak
-            disp[node, axis] += rel * np.cos(self._phase + self._phi[i])
+            disp[node, axis] += c.sign * rel * np.cos(self._phase + self._phi[i])
 
         for i in g.fixed:   # clamped nodes never move
             if 0 <= i < g.n_nodes:

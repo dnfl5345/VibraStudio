@@ -103,25 +103,33 @@ def make_grid(nx: int = 3, ny: int = 3, width: float = 1.0, depth: float = 1.0) 
                     {"shape": "grid", "nx": nx, "ny": ny, "width": width, "depth": depth})
 
 
-def make_circle(n_nodes: int = 12, radius: float = 0.5) -> Geometry:
-    """Ring in the XY plane, node 1 at angle 0, counter-clockwise."""
+def make_circle(n_nodes: int = 12, radius: float = 0.5, ccw: bool = True) -> Geometry:
+    """Ring in the XY plane, node 1 at angle 0.
+
+    ccw=True numbers nodes counter-clockwise (viewed from +Z); ccw=False
+    clockwise — match whichever way the sensors were labeled on the rig.
+    """
     n = max(3, int(n_nodes))
-    ang = 2 * np.pi * np.arange(n) / n
+    sgn = 1.0 if ccw else -1.0
+    ang = sgn * 2 * np.pi * np.arange(n) / n
     nodes = np.column_stack((radius * np.cos(ang), radius * np.sin(ang), np.zeros(n)))
     edges = [(i, (i + 1) % n) for i in range(n)]
     return Geometry("circle", nodes, edges,
-                    {"shape": "circle", "n_nodes": n, "radius": radius})
+                    {"shape": "circle", "n_nodes": n, "radius": radius, "ccw": ccw})
 
 
 def make_cylinder(n_per_ring: int = 12, n_layers: int = 2,
-                  radius: float = 0.5, height: float = 1.0) -> Geometry:
+                  radius: float = 0.5, height: float = 1.0,
+                  ccw: bool = True) -> Geometry:
     """Cylinder: n_layers rings of n_per_ring nodes, stacked along Z.
 
     Node ids run around ring 1 first (1..n), then ring 2 (n+1..2n), etc.
     Edges: each ring closed + verticals between adjacent rings.
+    ccw selects the numbering direction viewed from +Z.
     """
     n, layers = max(3, int(n_per_ring)), max(1, int(n_layers))
-    ang = 2 * np.pi * np.arange(n) / n
+    sgn = 1.0 if ccw else -1.0
+    ang = sgn * 2 * np.pi * np.arange(n) / n
     zs = [0.0] if layers == 1 else np.linspace(0.0, height, layers)
     nodes = np.array([
         (radius * np.cos(a), radius * np.sin(a), z) for z in np.atleast_1d(zs) for a in ang
@@ -134,7 +142,7 @@ def make_cylinder(n_per_ring: int = 12, n_layers: int = 2,
             edges.extend((base + i, base + n + i) for i in range(n))
     return Geometry("cylinder", nodes, edges,
                     {"shape": "cylinder", "n_per_ring": n, "n_layers": layers,
-                     "radius": radius, "height": height})
+                     "radius": radius, "height": height, "ccw": ccw})
 
 
 SHAPES = {
@@ -160,7 +168,8 @@ def auto_map_channels(
 
     With axes=("X","Z"): ch1->node1/X, ch2->node1/Z, ch3->node2/X, ...
     With axes=("Z",):    ch1->node1/Z, ch2->node2/Z, ...
-    Channels beyond the last node wrap back to node 1.
+    Channels beyond the last node wrap back to node 1. Labels are rewritten
+    to S<node>_<axis> so the table always reads consistently with the map.
     """
     n_axes = max(1, len(axes))
     out = []
@@ -168,6 +177,7 @@ def auto_map_channels(
         node = (i // n_axes) % max(1, geometry.n_nodes) + 1
         ch.point = node
         ch.direction = axes[i % n_axes]
+        ch.label = f"S{node}_{ch.direction}"
         ch.position = geometry.nodes[node - 1, 2] / max(geometry.bbox_size(), 1e-9)
         out.append(ch)
     return out

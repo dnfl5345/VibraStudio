@@ -390,7 +390,7 @@ class ImpactView(BaseView):
                 c = self.channel_cfgs[ch_i]
                 if c.direction == direction and j < shape.size:
                     d_tip = FREE_LEN_CM * (1.0 - c.position)
-                    pts.append((d_tip, float(shape[j])))
+                    pts.append((d_tip, c.sign * float(shape[j])))
             pts.sort()
             if pts:
                 curve.setData([p[1] for p in pts], [p[0] for p in pts])

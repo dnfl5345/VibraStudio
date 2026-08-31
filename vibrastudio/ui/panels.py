@@ -28,7 +28,8 @@ def make_card(title: str) -> tuple[QFrame, QVBoxLayout]:
 class ChannelTable(QTableWidget):
     """Editable 18-channel map: enable, label, physical, point, dir, pos, sens, ref."""
 
-    COLS = ["On", "Label", "Physical channel", "Pt", "Dir", "Pos", "mV/g", "Ref"]
+    COLS = ["On", "Label", "Physical channel", "Pt", "Dir", "Inv", "Pos", "mV/g", "Ref"]
+    COL_INV, COL_POS, COL_SENS, COL_REF = 5, 6, 7, 8
     changed = Signal()
 
     def __init__(self) -> None:
@@ -66,24 +67,30 @@ class ChannelTable(QTableWidget):
             dir_box.currentTextChanged.connect(lambda *_: self.changed.emit())
             self.setCellWidget(i, 4, dir_box)
 
-            self.setItem(i, 5, QTableWidgetItem(f"{ch.position:.2f}"))
-            self.setItem(i, 6, QTableWidgetItem(f"{ch.sensitivity_mv_g:.0f}"))
+            inv = QTableWidgetItem()
+            inv.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            inv.setCheckState(Qt.Checked if ch.sign < 0 else Qt.Unchecked)
+            inv.setToolTip("Invert axis sign (left-handed sensor frame)")
+            self.setItem(i, self.COL_INV, inv)
+
+            self.setItem(i, self.COL_POS, QTableWidgetItem(f"{ch.position:.2f}"))
+            self.setItem(i, self.COL_SENS, QTableWidgetItem(f"{ch.sensitivity_mv_g:.0f}"))
 
             ref = QTableWidgetItem()
             ref.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             ref.setCheckState(Qt.Checked if ch.is_reference else Qt.Unchecked)
-            self.setItem(i, 7, ref)
+            self.setItem(i, self.COL_REF, ref)
         self._loading = False
         self.changed.emit()
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._loading:
             return
-        if item.column() == 7 and item.checkState() == Qt.Checked:
+        if item.column() == self.COL_REF and item.checkState() == Qt.Checked:
             # Only one reference channel at a time.
             self._loading = True
             for r in range(self.rowCount()):
-                other = self.item(r, 7)
+                other = self.item(r, self.COL_REF)
                 if other is not None and r != item.row():
                     other.setCheckState(Qt.Unchecked)
             self._loading = False
@@ -101,9 +108,10 @@ class ChannelTable(QTableWidget):
                         enabled=self.item(r, 0).checkState() == Qt.Checked,
                         point=int(float(self.item(r, 3).text())),
                         direction=dir_box.currentText() if dir_box else "Z",
-                        position=float(self.item(r, 5).text()),
-                        sensitivity_mv_g=float(self.item(r, 6).text()),
-                        is_reference=self.item(r, 7).checkState() == Qt.Checked,
+                        position=float(self.item(r, self.COL_POS).text()),
+                        sensitivity_mv_g=float(self.item(r, self.COL_SENS).text()),
+                        is_reference=self.item(r, self.COL_REF).checkState() == Qt.Checked,
+                        sign=-1 if self.item(r, self.COL_INV).checkState() == Qt.Checked else 1,
                     )
                 )
             except (ValueError, AttributeError):
