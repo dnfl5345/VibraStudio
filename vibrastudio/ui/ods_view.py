@@ -96,7 +96,11 @@ class OdsView(BaseView):
         self.p2_spin.setValue(2)
         self.wind_box = QComboBox()
         self.wind_box.addItems(["CCW ↺", "CW ↻"])
-        self.wind_box.setToolTip("Node numbering direction for circle/cylinder\n(viewed from +Z)")
+        self.wind_box.setToolTip(
+            "Node numbering direction (viewed from +Z)\n"
+            "Circle/Cylinder: rotation direction of node ids\n"
+            "Line: CCW = bottom-up, CW = top-down\n"
+            "Grid: CCW = +x within rows, CW = mirrored (right-to-left)")
         self.build_btn = QPushButton("Build Structure")
         self.map_box = QComboBox()
         self.map_box.addItems([m[0] for m in _MAP_MODES])
@@ -193,9 +197,9 @@ class OdsView(BaseView):
         p1, p2 = self.p1_spin.value(), self.p2_spin.value()
         ccw = self.wind_box.currentIndex() == 0
         if shape == "line":
-            self.geometry = build(shape, n_nodes=p1)
+            self.geometry = build(shape, n_nodes=p1, ccw=ccw)
         elif shape == "grid":
-            self.geometry = build(shape, nx=p1, ny=p2)
+            self.geometry = build(shape, nx=p1, ny=p2, ccw=ccw)
         elif shape == "circle":
             self.geometry = build(shape, n_nodes=p1, ccw=ccw)
         else:

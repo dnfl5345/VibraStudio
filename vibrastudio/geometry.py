@@ -76,19 +76,33 @@ class Geometry:
 
 
 # -- templates -----------------------------------------------------------
-def make_line(n_nodes: int = 5, length: float = 1.0) -> Geometry:
-    """Vertical beam along Z (cantilever), node 1 at the base."""
+def make_line(n_nodes: int = 5, length: float = 1.0, ccw: bool = True) -> Geometry:
+    """Vertical beam along Z (cantilever).
+
+    ccw=True numbers bottom-up (node 1 at the base); ccw=False top-down
+    (node 1 at the free tip) — match how the sensors are labeled.
+    """
     n = max(2, int(n_nodes))
     z = np.linspace(0.0, length, n)
+    if not ccw:
+        z = z[::-1]
     nodes = np.column_stack((np.zeros(n), np.zeros(n), z))
     edges = [(i, i + 1) for i in range(n - 1)]
-    return Geometry("line", nodes, edges, {"shape": "line", "n_nodes": n, "length": length})
+    return Geometry("line", nodes, edges,
+                    {"shape": "line", "n_nodes": n, "length": length, "ccw": ccw})
 
 
-def make_grid(nx: int = 3, ny: int = 3, width: float = 1.0, depth: float = 1.0) -> Geometry:
-    """Plate in the XY plane; node ids row-major (x fastest)."""
+def make_grid(nx: int = 3, ny: int = 3, width: float = 1.0, depth: float = 1.0,
+              ccw: bool = True) -> Geometry:
+    """Plate in the XY plane; node ids row-major (x fastest).
+
+    ccw=True runs +x within each row; ccw=False mirrors the traversal
+    (x right-to-left viewed from +Z).
+    """
     nx, ny = max(2, int(nx)), max(2, int(ny))
     xs = np.linspace(-width / 2, width / 2, nx)
+    if not ccw:
+        xs = xs[::-1]
     ys = np.linspace(-depth / 2, depth / 2, ny)
     nodes = np.array([(x, y, 0.0) for y in ys for x in xs])
     edges: list[tuple[int, int]] = []
@@ -100,7 +114,8 @@ def make_grid(nx: int = 3, ny: int = 3, width: float = 1.0, depth: float = 1.0) 
             if j < ny - 1:
                 edges.append((k, k + nx))
     return Geometry("grid", nodes, edges,
-                    {"shape": "grid", "nx": nx, "ny": ny, "width": width, "depth": depth})
+                    {"shape": "grid", "nx": nx, "ny": ny, "width": width,
+                     "depth": depth, "ccw": ccw})
 
 
 def make_circle(n_nodes: int = 12, radius: float = 0.5, ccw: bool = True) -> Geometry:
