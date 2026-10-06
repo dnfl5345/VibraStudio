@@ -47,7 +47,8 @@ class StreamRecorder:
         if not self.recording:
             return
         try:
-            self._queue.put_nowait(block.copy())
+            # float32 halves memory: 48 ch at 12.8 kS/s is 295 MB/min in float64.
+            self._queue.put_nowait(block.astype(np.float32))
         except queue.Full:
             pass
 

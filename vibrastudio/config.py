@@ -119,9 +119,38 @@ def default_channel_template(chassis: str = "cDAQ9189-233EBC6", n_channels: int 
     return channels
 
 
-def channels_from_detected(physical: list[str], max_channels: int = 18) -> list[ChannelConfig]:
-    """Map detected physical AI channels onto the point/direction template."""
+def channels_from_detected(physical: list[str], max_channels: int = 96) -> list[ChannelConfig]:
+    """Map detected physical AI channels onto sensors.
+
+    Three-input modules (NI-9230) are treated as one triaxial sensor each:
+    ai0/ai1/ai2 -> X/Y/Z of sensor S<n>, numbered across every chassis in
+    the order given (two 8-slot chassis -> S1..S16, 48 channels). Any other
+    layout falls back to the X/Z pair template.
+    """
     physical = physical[:max_channels]
+
+    modules: dict[str, list[str]] = {}
+    for name in physical:
+        modules.setdefault(name.rsplit("/", 1)[0], []).append(name)
+    if modules and all(len(v) == 3 for v in modules.values()):
+        n_sensors = len(modules)
+        channels = []
+        for s, names in enumerate(modules.values(), start=1):
+            for name, axis in zip(names, "XYZ"):
+                channels.append(
+                    ChannelConfig(
+                        physical_channel=name,
+                        label=f"S{s}_{axis}",
+                        enabled=True,
+                        point=s,
+                        direction=axis,
+                        position=s / n_sensors,
+                        sensitivity_mv_g=100.0,
+                        is_reference=(not channels),
+                    )
+                )
+        return channels
+
     n_points = max(1, len(physical) // 2) if len(physical) > 1 else 1
     channels: list[ChannelConfig] = []
     for i, name in enumerate(physical):

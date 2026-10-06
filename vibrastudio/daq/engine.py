@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 import threading
+import time
 import traceback
+from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -14,6 +18,51 @@ from .simulator import SimBackend
 
 # C-series dynamic-signal modules with IEPE excitation (accelerometer inputs).
 _IEPE_MODULE_PAT = re.compile(r"\b9(230|231|232|234|250|260)\b")
+_PHYS_PAT = re.compile(r"^(?P<chassis>.+?)Mod(?P<mod>\d+)/ai(?P<ai>\d+)$")
+
+
+def split_physical(name: str) -> tuple[str, int, int]:
+    """'cDAQ9189-2196A44Mod3/ai1' -> ('cDAQ9189-2196A44', 3, 1)."""
+    m = _PHYS_PAT.match(name)
+    if not m:
+        return name, 0, 0
+    return m.group("chassis"), int(m.group("mod")), int(m.group("ai"))
+
+
+def discover_network_chassis(timeout: float = 12.0) -> list[str]:
+    """Hostnames of NI chassis reachable on wired links (best effort, Windows).
+
+    A chassis that was never added in NI MAX is invisible to DAQmx, so a
+    second chassis on the same cable would silently be ignored. NI devices
+    are found by their MAC prefix (00-80-2F) in the IPv6 neighbor table and
+    named through mDNS reverse lookup.
+    """
+    if sys.platform != "win32":
+        return []
+    script = (
+        "Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' -and "
+        "$_.MediaType -eq '802.3' } | ForEach-Object { $i = $_.ifIndex; "
+        "ping -6 -n 1 -w 400 \"ff02::1%$i\" | Out-Null; "
+        "Get-NetNeighbor -InterfaceIndex $i -AddressFamily IPv6 -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.LinkLayerAddress -match '^00-80-2F' } | ForEach-Object { "
+        "try { (Resolve-DnsName -Name $_.IPAddress -Type PTR -ErrorAction Stop | "
+        "Select-Object -First 1).NameHost } catch {} } }"
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout
+    except Exception:
+        return []
+    hosts = []
+    for line in out.splitlines():
+        host = line.strip()
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
 
 
 @dataclass
@@ -26,21 +75,28 @@ class ConnectResult:
     channels: list[str] = field(default_factory=list)     # preferred AI channels
     all_channels: list[str] = field(default_factory=list)
     reserved: list[str] = field(default_factory=list)     # chassis reserved by us
+    added: list[str] = field(default_factory=list)        # chassis newly registered
     messages: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
+        """One line per chassis: 'cDAQ9189-233EBC6 — 8× NI 9230 (BNC) — 24 AI ch'."""
         if not self.ok:
             return self.messages[-1] if self.messages else "No DAQ device found"
-        mods = ", ".join(
-            f"Mod{n.rsplit('Mod', 1)[-1]}:{p}" if "Mod" in n else f"{n}:{p}"
-            for n, p in self.modules
-        ) or "no modules"
-        chassis = self.chassis[0] if self.chassis else "device"
-        extra = " (reserved)" if self.reserved else ""
-        return f"{chassis}{extra} — {mods} — {len(self.channels)} AI ch"
+        lines = []
+        for entry in self.chassis:
+            name = entry.split(" (")[0]
+            kinds = Counter(p for n, p in self.modules if n.startswith(name + "Mod"))
+            mods = ", ".join(f"{c}× {p}" for p, c in kinds.items()) or "no modules"
+            n_ch = sum(1 for c in self.channels if c.startswith(name + "Mod"))
+            tag = " (new)" if name in self.added else ""
+            lines.append(f"{name}{tag} — {mods} — {n_ch} AI ch")
+        if len(self.chassis) > 1:
+            lines.append(f"{len(self.chassis)} chassis · {len(self.channels)} AI ch total")
+        return "\n".join(lines) if lines else f"{len(self.channels)} AI ch"
 
 
-def auto_connect(reserve: bool = True, prefer_iepe: bool = True) -> ConnectResult:
+def auto_connect(reserve: bool = True, prefer_iepe: bool = True,
+                 discover: bool = True) -> ConnectResult:
     """Discover NI-DAQmx devices and make them usable without NI MAX.
 
     Network cDAQ chassis (e.g. cDAQ-9189) lose their host reservation after
@@ -61,6 +117,26 @@ def auto_connect(reserve: bool = True, prefer_iepe: bool = True) -> ConnectResul
     except Exception as exc:
         res.messages.append(f"DAQmx system scan failed: {exc}")
         return res
+
+    # Register chassis that are on the wire but unknown to DAQmx (e.g. a
+    # second chassis added to extend the rig).
+    if discover:
+        known = {str(getattr(d, "name", "")).lower() for d in devices}
+        for host in discover_network_chassis():
+            short = host.split(".")[0]
+            if short.lower() in known:
+                continue
+            try:
+                from nidaqmx.system import Device
+
+                Device.add_network_device(host, device_name=short,
+                                          attempt_reservation=True, timeout=30.0)
+                res.added.append(short)
+                res.messages.append(f"Registered new network chassis {short}")
+            except Exception as exc:
+                res.messages.append(f"Could not add {short}: {str(exc).splitlines()[0]}")
+        if res.added:
+            devices = list(nidaqmx.system.System.local().devices)
 
     if not devices:
         res.messages.append("No NI devices configured on this system")
@@ -83,7 +159,16 @@ def auto_connect(reserve: bool = True, prefer_iepe: bool = True) -> ConnectResul
                 dev.reserve_network_device(override_reservation=True)
                 res.reserved.append(name)
                 res.messages.append(f"Reserved network chassis {name}")
-                modules = [(m.name, str(m.product_type)) for m in dev.chassis_module_devices]
+                # Module enumeration trickles in after a reservation (seen:
+                # 6 of 8 modules at first) — wait until the count is stable.
+                last = -1
+                for _ in range(8):
+                    modules = [(m.name, str(m.product_type))
+                               for m in dev.chassis_module_devices]
+                    if modules and len(modules) == last:
+                        break
+                    last = len(modules)
+                    time.sleep(0.5)
             except Exception as exc:
                 res.messages.append(f"Reserve failed for {name}: {exc}")
         res.modules.extend(modules)
@@ -99,8 +184,17 @@ def auto_connect(reserve: bool = True, prefer_iepe: bool = True) -> ConnectResul
         if _IEPE_MODULE_PAT.search(str(getattr(dev, "product_type", ""))):
             iepe_channels.extend(chans)
 
-    res.all_channels = sorted(set(res.all_channels))
-    res.channels = sorted(set(iepe_channels)) if (prefer_iepe and iepe_channels) else res.all_channels
+    # Chassis in registration order, then module and input numerically
+    # (a plain string sort would put Mod10 before Mod2 and reorder chassis).
+    chassis_order = {entry.split(" (")[0]: i for i, entry in enumerate(res.chassis)}
+
+    def natural(name: str) -> tuple[int, str, int, int]:
+        chassis, mod, ai = split_physical(name)
+        return chassis_order.get(chassis, len(chassis_order)), chassis, mod, ai
+
+    res.all_channels = sorted(set(res.all_channels), key=natural)
+    res.channels = (sorted(set(iepe_channels), key=natural)
+                    if (prefer_iepe and iepe_channels) else res.all_channels)
     res.ok = len(res.channels) > 0
     if not res.ok and not res.messages:
         res.messages.append("Devices found but no AI channels available")
@@ -165,10 +259,15 @@ class NidaqBackend:
                         min_val=self.acq.min_val,
                         max_val=self.acq.max_val,
                     )
+            # Channels from several cDAQ-9189 chassis may share this one task:
+            # DAQmx synchronizes them over the network (802.1AS), so all
+            # channels stay sample-aligned. Keep ~4 s of driver buffer so a
+            # busy GUI cannot overflow a 48-channel stream.
             task.timing.cfg_samp_clk_timing(
                 rate=self.acq.sample_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=max(8 * self.acq.chunk_size, 8192),
+                samps_per_chan=max(8 * self.acq.chunk_size,
+                                   int(4 * self.acq.sample_rate)),
             )
             self._reader = AnalogMultiChannelReader(task.in_stream)
             self._buf = np.zeros((len(self.channels), self.acq.chunk_size), dtype=np.float64)
@@ -180,8 +279,10 @@ class NidaqBackend:
 
     def read(self) -> np.ndarray:
         assert self._reader is not None and self._buf is not None
+        # A multi-chassis task starts on a synchronized future time, so the
+        # first block can take several seconds to arrive.
         self._reader.read_many_sample(
-            self._buf, number_of_samples_per_channel=self.acq.chunk_size, timeout=5.0
+            self._buf, number_of_samples_per_channel=self.acq.chunk_size, timeout=15.0
         )
         data = self._buf.copy()
         if self.acq.coupling == "voltage":
@@ -189,6 +290,13 @@ class NidaqBackend:
             sens = np.array([1000.0 / max(1e-9, c.sensitivity_mv_g) for c in self.channels])
             data *= sens[:, None]
         return data
+
+    def backlog(self) -> int:
+        """Samples per channel waiting in the driver buffer (0 = keeping up)."""
+        try:
+            return int(self._task.in_stream.avail_samp_per_chan) if self._task else 0
+        except Exception:
+            return 0
 
     def stop(self) -> None:
         if self._task is not None:
@@ -275,6 +383,15 @@ class AcquisitionEngine:
         self._listeners: list = []   # callables(block) e.g. recorder
         self._listener_lock = threading.Lock()
 
+        # Stream health counters (written by the acquisition thread).
+        self.blocks = 0
+        self.t_first = 0.0
+        self.t_last = 0.0
+        self.backlog = 0
+        self.max_backlog = 0
+        self.max_gap = 0.0           # longest wait between two blocks (s)
+        self._rate_marks: list[tuple[float, int]] = []
+
         if backend is not None:
             self.backend = backend   # e.g. PlaybackBackend
         elif acq.simulate:
@@ -313,11 +430,47 @@ class AcquisitionEngine:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    # -- stream health ----------------------------------------------------
+    def measured_rate(self, window: float = 5.0) -> float:
+        """Samples/s actually delivered over the last ``window`` seconds."""
+        marks = list(self._rate_marks)   # snapshot: the DAQ thread mutates it
+        if len(marks) < 2:
+            return 0.0
+        t_end, n_end = marks[-1]
+        t_ref, n_ref = marks[0]
+        for t, n in marks:
+            if t_end - t <= window:
+                t_ref, n_ref = t, n
+                break
+        dt = t_end - t_ref
+        return (n_end - n_ref) / dt if dt > 0 else 0.0
+
+    def block_age(self) -> float:
+        """Seconds since the last block arrived (grows if the stream stalls)."""
+        return time.perf_counter() - self.t_last if self.t_last else 0.0
+
+    def _note_block(self, n_samples: int) -> None:
+        now = time.perf_counter()
+        if self.blocks == 0:
+            self.t_first = now
+        else:
+            self.max_gap = max(self.max_gap, now - self.t_last)
+        self.t_last = now
+        self.blocks += 1
+        backlog = getattr(self.backend, "backlog", None)
+        self.backlog = backlog() if callable(backlog) else 0
+        self.max_backlog = max(self.max_backlog, self.backlog)
+        marks = self._rate_marks
+        marks.append((now, self.ring.total))
+        while len(marks) > 2 and now - marks[0][0] > 12.0:
+            marks.pop(0)
+
     def _run(self) -> None:
         try:
             while not self._stop.is_set():
                 block = self.backend.read()
                 self.ring.append(block)
+                self._note_block(block.shape[1])
                 with self._listener_lock:
                     listeners = list(self._listeners)
                 for fn in listeners:

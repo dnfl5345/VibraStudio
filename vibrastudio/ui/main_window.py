@@ -21,6 +21,7 @@ from ..daq.playback import PlaybackBackend, RecordingData, load_recording
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
+from .health_view import HealthView
 from .impact_view import ImpactView
 from .ods_view import OdsView
 from .panels import Sidebar
@@ -59,6 +60,7 @@ class MainWindow(QMainWindow):
         self.view_ods = OdsView()
         self.view_impact = ImpactView()
         self.view_metrics = MetricsView()
+        self.view_health = HealthView()
         self.tabs.addTab(self.view_time, "Time Series")
         self.tabs.addTab(self.view_spec, "FFT Spectrum")
         self.tabs.addTab(self.view_sgram, "Spectrogram")
@@ -68,6 +70,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.view_ods, "ODS / Modes")
         self.tabs.addTab(self.view_impact, "Impact Test")
         self.tabs.addTab(self.view_metrics, "Metrics")
+        self.tabs.addTab(self.view_health, "DAQ Health")
 
         central = QWidget()
         lay = QHBoxLayout(central)
@@ -124,6 +127,8 @@ class MainWindow(QMainWindow):
             view.set_channels(labels)
         self.view_ods.set_channel_configs(enabled)
         self.view_impact.set_channel_configs(enabled)
+        self.view_health.set_channel_configs(enabled)
+        self.sidebar.set_channel_count(len(enabled), len(self.cfg.channels))
 
     # -- device auto-connect ---------------------------------------------
     def detect_hardware(self, auto: bool = False) -> None:
@@ -170,8 +175,11 @@ class MainWindow(QMainWindow):
             self.sidebar.source_box.setCurrentIndex(0)
         self.sidebar.set_device_info(res.summary(), connected=True)
         note = " · chassis reserved" if res.reserved else ""
+        if res.added:
+            note += f" · new chassis registered: {', '.join(res.added)}"
         self.statusBar().showMessage(
-            f"DAQ connected: {len(res.channels)} AI channels mapped{note}")
+            f"DAQ connected: {len(res.chassis)} chassis, "
+            f"{len(res.channels)} AI channels mapped{note}")
 
     def load_default_channels(self) -> None:
         self.cfg.channels = default_channel_template()
@@ -416,6 +424,9 @@ class MainWindow(QMainWindow):
         self.sidebar.set_stat("Elapsed", f"{elapsed:.1f} s")
         self.sidebar.set_stat("Buffer", f"{min(100, 100*total/engine.ring.capacity):.0f} %")
         self.sidebar.set_stat("Avg count", str(analyzer.navg))
+        rate = engine.measured_rate()
+        self.sidebar.set_stat(
+            "Rate", f"{rate:,.0f} S/s ({100 * (rate / fs - 1):+.1f} %)" if rate else "—")
 
         idx = self.tabs.currentIndex()
         widget = self.tabs.currentWidget()
@@ -440,6 +451,8 @@ class MainWindow(QMainWindow):
             self.view_ods.update_view(analyzer)
         elif widget is self.view_impact:
             self.view_impact.update_view(engine)
+        elif widget is self.view_health:
+            self.view_health.update_view(engine)
         elif widget is self.view_metrics:
             n = int(2.0 * fs)
             self.view_metrics.update_view(engine.ring.latest(n), analyzer)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
@@ -92,6 +94,9 @@ class TimeSeriesView(BaseView):
         for i, lbl in enumerate(self.labels):
             c = self.plot.plot(pen=pg.mkPen(self.color(i), width=1.0), name=lbl)
             self.curves.append(c)
+        # A 48-entry legend would cover the traces; the lane labels on the
+        # axis already name every channel.
+        self.legend.setVisible(self.legend_chk.isChecked() and len(self.labels) <= 18)
 
     def update_view(self, data: np.ndarray, fs: float, t_end: float) -> None:
         if data.size == 0 or not self.curves:
@@ -481,6 +486,7 @@ class MetricsView(BaseView):
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._last_update = 0.0
         hint = QLabel("Crest > 6 or Kurtosis > 8 flagged as impulsive (possible bearing damage).")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -497,6 +503,12 @@ class MetricsView(BaseView):
     def update_view(self, data: np.ndarray, analyzer: dsp.StreamingAnalyzer) -> None:
         if data.size == 0:
             return
+        # 4 Hz is as fast as a table of numbers can be read, and keeps a
+        # 48-channel refresh well inside the GUI tick.
+        now = time.perf_counter()
+        if now - self._last_update < 0.25:
+            return
+        self._last_update = now
         amp = analyzer.amplitude_spectrum("rms") if analyzer.navg else None
         for i in range(min(data.shape[0], self.table.rowCount())):
             m = dsp.channel_metrics(data[i])

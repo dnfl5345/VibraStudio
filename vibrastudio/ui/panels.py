@@ -231,7 +231,8 @@ class Sidebar(QWidget):
         ana.addWidget(self.res_label)
 
         # -- channels card -----------------------------------------------
-        ch_card, chl = make_card("Channels  (18 ch map)")
+        ch_card, chl = make_card("Channels")
+        self._ch_title = ch_card.findChild(QLabel, "CardTitle")
         btn_row = QHBoxLayout()
         self.detect_btn = QPushButton("⟲  Connect DAQ")
         self.default_btn = QPushButton("Default 18ch")
@@ -249,7 +250,8 @@ class Sidebar(QWidget):
         st_card, st = make_card("Status")
         self.status_grid = QGridLayout()
         self._stat_labels: dict[str, QLabel] = {}
-        for row, key in enumerate(["State", "Samples/ch", "Elapsed", "Buffer", "Avg count"]):
+        for row, key in enumerate(["State", "Samples/ch", "Elapsed", "Rate", "Buffer",
+                                   "Avg count"]):
             self.status_grid.addWidget(QLabel(key), row, 0)
             v = QLabel("—")
             v.setObjectName("StatValue")
@@ -322,6 +324,10 @@ class Sidebar(QWidget):
     def set_stat(self, key: str, value: str) -> None:
         if key in self._stat_labels:
             self._stat_labels[key].setText(value)
+
+    def set_channel_count(self, enabled: int, total: int) -> None:
+        if self._ch_title is not None:
+            self._ch_title.setText(f"CHANNELS  ({enabled} of {total} enabled)")
 
     def set_device_info(self, text: str, connected: bool = False) -> None:
         self.device_label.setText(text)
