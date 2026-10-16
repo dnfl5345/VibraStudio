@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -65,6 +66,86 @@ def discover_network_chassis(timeout: float = 12.0) -> list[str]:
     return hosts
 
 
+def _network_address(dev) -> tuple[str, str] | None:
+    """(ip, hostname) of a network device, or None for local (USB/PCI) ones."""
+    try:
+        ip = str(dev.tcpip_ethernet_ip or "")
+    except Exception:
+        return None
+    try:
+        host = str(dev.tcpip_hostname or "")
+    except Exception:
+        host = ""
+    return (ip, host) if (ip or host) else None
+
+
+def chassis_reachable(dev, timeout: float = 0.8) -> bool:
+    """True if a network chassis answers right now.
+
+    DAQmx keeps a disconnected chassis registered together with the last
+    module list it saw, so "registered with modules" says nothing about
+    being on the wire. A task that includes such a chassis fails at start
+    with -201401. Probe the chassis web/service ports by cached IP, then by
+    mDNS hostname (the link-local IP can change between sessions).
+    """
+    addr = _network_address(dev)
+    if addr is None:
+        return True
+    ip, host = addr
+
+    def answers(target: str) -> bool:
+        for port in (80, 31415):
+            try:
+                with socket.create_connection((target, port), timeout=timeout):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    if ip and answers(ip):
+        return True
+    if host:
+        # mDNS lookup of a host that is gone blocks for seconds and takes no
+        # timeout, so bound it with a helper thread.
+        found: list[str] = []
+
+        def resolve() -> None:
+            try:
+                found.extend(a[4][0] for a in socket.getaddrinfo(
+                    f"{host}.local", 80, socket.AF_INET, socket.SOCK_STREAM))
+            except OSError:
+                pass
+
+        t = threading.Thread(target=resolve, daemon=True)
+        t.start()
+        t.join(1.5)
+        for addr_ip in dict.fromkeys(found):
+            if addr_ip != ip and answers(addr_ip):
+                return True
+    return False
+
+
+def unreachable_chassis(physical_channels: list[str]) -> list[str]:
+    """Chassis referenced by these channels that do not answer right now."""
+    try:
+        from nidaqmx.system import Device
+    except Exception:
+        return []
+    names = []
+    for ch in physical_channels:
+        chassis, mod, _ = split_physical(ch)
+        if mod and chassis not in names:
+            names.append(chassis)
+    dead = []
+    for name in names:
+        try:
+            if not chassis_reachable(Device(name)):
+                dead.append(name)
+        except Exception:
+            dead.append(name)
+    return dead
+
+
 @dataclass
 class ConnectResult:
     """Outcome of an auto-connect scan over the NI-DAQmx system."""
@@ -76,11 +157,15 @@ class ConnectResult:
     all_channels: list[str] = field(default_factory=list)
     reserved: list[str] = field(default_factory=list)     # chassis reserved by us
     added: list[str] = field(default_factory=list)        # chassis newly registered
+    offline: list[str] = field(default_factory=list)      # registered but not answering
     messages: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         """One line per chassis: 'cDAQ9189-233EBC6 — 8× NI 9230 (BNC) — 24 AI ch'."""
         if not self.ok:
+            if self.offline:
+                return ("No reachable chassis — offline: " + ", ".join(self.offline)
+                        + "\nCheck power and the Ethernet cable.")
             return self.messages[-1] if self.messages else "No DAQ device found"
         lines = []
         for entry in self.chassis:
@@ -90,6 +175,8 @@ class ConnectResult:
             n_ch = sum(1 for c in self.channels if c.startswith(name + "Mod"))
             tag = " (new)" if name in self.added else ""
             lines.append(f"{name}{tag} — {mods} — {n_ch} AI ch")
+        for name in self.offline:
+            lines.append(f"{name} — offline (not reachable), skipped")
         if len(self.chassis) > 1:
             lines.append(f"{len(self.chassis)} chassis · {len(self.channels)} AI ch total")
         return "\n".join(lines) if lines else f"{len(self.channels)} AI ch"
@@ -152,6 +239,10 @@ def auto_connect(reserve: bool = True, prefer_iepe: bool = True,
         is_chassis = "Mod" not in name and (modules or "cDAQ" in product or "cRIO" in product)
         if not is_chassis:
             continue
+        if not chassis_reachable(dev):
+            res.offline.append(name)
+            res.messages.append(f"{name} is not reachable — skipped (cached modules ignored)")
+            continue
         res.chassis.append(f"{name} ({product})")
 
         if not modules and reserve:
@@ -176,6 +267,9 @@ def auto_connect(reserve: bool = True, prefer_iepe: bool = True,
     # Enumerate AI channels (chassis reservation above may have added modules).
     iepe_channels: list[str] = []
     for dev in nidaqmx.system.System.local().devices:
+        dev_name = str(getattr(dev, "name", ""))
+        if any(dev_name.startswith(off + "Mod") or dev_name == off for off in res.offline):
+            continue
         try:
             chans = [ch.name for ch in dev.ai_physical_chans]
         except Exception:
@@ -349,6 +443,29 @@ class RingBuffer:
             k = self.capacity - start
             return np.concatenate((self._data[:, start:], self._data[:, : n - k]), axis=1)
 
+    def read_range(self, start_abs: int, end_abs: int | None = None
+                   ) -> tuple[np.ndarray, int, int]:
+        """Samples [start_abs, end_abs) by absolute index, read atomically.
+
+        Returns (data, start, end) clipped to what the ring still holds;
+        ``end_abs=None`` means "up to the newest sample".
+        """
+        with self._lock:
+            end = self.total if end_abs is None else min(int(end_abs), self.total)
+            oldest = self.total - min(self.total, self.capacity)
+            start = max(int(start_abs), oldest)
+            n = end - start
+            if n <= 0:
+                return np.zeros((self.n_channels, 0)), start, start
+            end_pos = (self._write - (self.total - end)) % self.capacity
+            start_pos = (end_pos - n) % self.capacity
+            if start_pos + n <= self.capacity:
+                data = self._data[:, start_pos:start_pos + n].copy()
+            else:
+                k = self.capacity - start_pos
+                data = np.concatenate((self._data[:, start_pos:], self._data[:, :n - k]), axis=1)
+            return data, start, end
+
     def read_since(self, total_mark: int, max_samples: int) -> tuple[np.ndarray, int]:
         """Return samples written after ``total_mark`` (up to max), and new mark."""
         with self._lock:
@@ -444,6 +561,12 @@ class AcquisitionEngine:
                 break
         dt = t_end - t_ref
         return (n_end - n_ref) / dt if dt > 0 else 0.0
+
+    def iepe_settling(self, settle_s: float = 22.0) -> bool:
+        """True while IEPE bias is still charging after a hardware start."""
+        if not isinstance(self.backend, NidaqBackend) or self.acq.coupling != "iepe":
+            return False
+        return self.t_first == 0.0 or time.perf_counter() - self.t_first < settle_s
 
     def block_age(self) -> float:
         """Seconds since the last block arrived (grows if the stream stalls)."""

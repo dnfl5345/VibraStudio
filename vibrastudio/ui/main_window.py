@@ -16,12 +16,15 @@ from .. import __app_name__, __version__
 from ..config import (
     AppConfig, ChannelConfig, channels_from_detected, default_channel_template,
 )
-from ..daq.engine import AcquisitionEngine, ConnectResult, auto_connect
+from ..daq.engine import (
+    AcquisitionEngine, ConnectResult, auto_connect, unreachable_chassis,
+)
 from ..daq.playback import PlaybackBackend, RecordingData, load_recording
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
 from .health_view import HealthView
+from .trigger_view import TriggerView
 from .impact_view import ImpactView
 from .ods_view import OdsView
 from .panels import Sidebar
@@ -61,6 +64,7 @@ class MainWindow(QMainWindow):
         self.view_impact = ImpactView()
         self.view_metrics = MetricsView()
         self.view_health = HealthView()
+        self.view_trigger = TriggerView()
         self.tabs.addTab(self.view_time, "Time Series")
         self.tabs.addTab(self.view_spec, "FFT Spectrum")
         self.tabs.addTab(self.view_sgram, "Spectrogram")
@@ -69,6 +73,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.view_frf, "FRF / Coherence")
         self.tabs.addTab(self.view_ods, "ODS / Modes")
         self.tabs.addTab(self.view_impact, "Impact Test")
+        self.tabs.addTab(self.view_trigger, "Trigger")
         self.tabs.addTab(self.view_metrics, "Metrics")
         self.tabs.addTab(self.view_health, "DAQ Health")
 
@@ -96,6 +101,7 @@ class MainWindow(QMainWindow):
         self.view_ods.channels_mapped.connect(self._on_channels_mapped)
         self.view_impact.beam_preset_requested.connect(self.apply_beam_preset)
         self.view_impact.mode_frequency_selected.connect(self._show_mode_in_ods)
+        self.view_trigger.start_stream_requested.connect(self._start_for_trigger)
         self.playback: RecordingData | None = None
 
         self.view_spec.reset_btn.clicked.connect(
@@ -128,6 +134,7 @@ class MainWindow(QMainWindow):
         self.view_ods.set_channel_configs(enabled)
         self.view_impact.set_channel_configs(enabled)
         self.view_health.set_channel_configs(enabled)
+        self.view_trigger.set_channels(labels)
         self.sidebar.set_channel_count(len(enabled), len(self.cfg.channels))
 
     # -- device auto-connect ---------------------------------------------
@@ -330,6 +337,29 @@ class MainWindow(QMainWindow):
                 return
             backend = PlaybackBackend(self.playback, self.cfg.acquisition.chunk_size,
                                       channel_rows=rows)
+        elif not self.cfg.acquisition.simulate:
+            # A chassis that was unplugged stays registered in DAQmx with its
+            # old module list; starting a task with it fails (-201401).
+            dead = unreachable_chassis([c.physical_channel for c in enabled])
+            if dead:
+                n_dead = sum(1 for c in enabled
+                             if any(c.physical_channel.startswith(d + "Mod") for d in dead))
+                answer = QMessageBox.question(
+                    self, "Chassis not reachable",
+                    "These chassis do not answer on the network:\n  "
+                    + "\n  ".join(dead)
+                    + f"\n\nDisable their {n_dead} channels and start with the rest?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                if answer != QMessageBox.Yes:
+                    return
+                for c in self.cfg.channels:
+                    if any(c.physical_channel.startswith(d + "Mod") for d in dead):
+                        c.enabled = False
+                self.sidebar.channel_table.load(self.cfg.channels)
+                enabled = self.cfg.enabled_channels()
+                if not enabled:
+                    QMessageBox.warning(self, "Channels", "No reachable channels left.")
+                    return
 
         try:
             self.engine = AcquisitionEngine(enabled, self.cfg.acquisition, backend=backend)
@@ -354,7 +384,14 @@ class MainWindow(QMainWindow):
             f"Streaming {len(enabled)} ch @ {self.cfg.acquisition.sample_rate:.0f} Hz ({mode})")
         self.timer.start()
 
+    def _start_for_trigger(self) -> None:
+        if self.engine is None or not self.engine.running:
+            self.start_streaming()
+        if self.engine is None or not self.engine.running:
+            self.view_trigger.stream_stopped()     # start failed: un-press Arm
+
     def stop_streaming(self) -> None:
+        self.view_trigger.stream_stopped()
         self.timer.stop()
         if self.sidebar.record_btn.isChecked():
             self.sidebar.record_btn.setChecked(False)
@@ -419,7 +456,10 @@ class MainWindow(QMainWindow):
             state = f"▶ Playback {pct:.0f}%" + (f" (loop {pb.loops + 1})" if pb.loops else "")
         else:
             state = "● Streaming"
-        self.sidebar.set_stat("State", state + ("  [REC]" if self.recorder.recording else ""))
+        # The trigger watches every new sample, whichever tab is visible.
+        self.view_trigger.process(engine)
+        self.sidebar.set_stat("State", state + ("  [REC]" if self.recorder.recording else "")
+                              + self.view_trigger.badge())
         self.sidebar.set_stat("Samples/ch", f"{total:,}")
         self.sidebar.set_stat("Elapsed", f"{elapsed:.1f} s")
         self.sidebar.set_stat("Buffer", f"{min(100, 100*total/engine.ring.capacity):.0f} %")
@@ -451,6 +491,8 @@ class MainWindow(QMainWindow):
             self.view_ods.update_view(analyzer)
         elif widget is self.view_impact:
             self.view_impact.update_view(engine)
+        elif widget is self.view_trigger:
+            self.view_trigger.update_view(engine)
         elif widget is self.view_health:
             self.view_health.update_view(engine)
         elif widget is self.view_metrics:
