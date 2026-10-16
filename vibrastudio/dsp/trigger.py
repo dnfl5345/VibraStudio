@@ -167,6 +167,7 @@ class TriggerController:
     def disarm(self) -> None:
         """Stop watching. A capture in progress is saved up to now."""
         if self.state == CAPTURING and self._cap is not None and self._engine is not None:
+            self._cap["reason"] += ", stopped early"
             self._finish(self._engine, self._engine.ring.total)
         self._drop_listener()
         self._cap = None
@@ -175,7 +176,8 @@ class TriggerController:
     def force(self) -> None:
         """Trigger now, regardless of level (manual start)."""
         if self._engine is not None and self.state in (ARMED, SETTLING):
-            self._start_capture(self._engine.ring.total, self.last_level, self.last_channel)
+            self._start_capture(self._engine.ring.total, self.last_level, self.last_channel,
+                                reason="manual")
 
     # -- per GUI tick --------------------------------------------------------
     def process(self, engine) -> None:
@@ -260,7 +262,8 @@ class TriggerController:
                     self.state = DISARMED
 
     # -- capture -------------------------------------------------------------
-    def _start_capture(self, trigger_abs: int, level: float, channel: int) -> None:
+    def _start_capture(self, trigger_abs: int, level: float, channel: int,
+                       reason: str = "level") -> None:
         engine = self._engine
         s = self.settings
         fs = engine.fs
@@ -281,7 +284,7 @@ class TriggerController:
             "trigger_abs": trigger_abs, "start_abs": got_start,
             "pre": pre.astype(np.float32), "pre_end": got_end,
             "level": level, "peak": level, "channel": channel,
-            "last_loud": trigger_abs, "t_wall": datetime.now(),
+            "last_loud": trigger_abs, "t_wall": datetime.now(), "reason": reason,
         }
         self.state = CAPTURING
 
@@ -345,6 +348,9 @@ class TriggerController:
         np.savez_compressed(base.with_suffix(".npz"), data=data, fs=fs,
                             channels=np.array(labels))
         pre_s = (cap["trigger_abs"] - cap["start_abs"]) / fs
+        ac = data - data.mean(axis=1, keepdims=True)
+        ch_rms = np.sqrt(np.mean(ac.astype(np.float64) ** 2, axis=1))
+        ch_peak = np.max(np.abs(ac), axis=1).astype(np.float64)
         ch_label = self.labels[cap["channel"]] if 0 <= cap["channel"] < len(self.labels) else "?"
         meta = {
             "started_at": stamp, "sample_rate_hz": fs, "channels": labels,
@@ -353,8 +359,13 @@ class TriggerController:
             "trigger": {
                 "pre_trigger_s": pre_s, "trigger_sample": int(round(pre_s * fs)),
                 "channel": ch_label, "level_at_trigger": cap["level"],
-                "peak_level": cap["peak"], "settings": asdict(s),
+                "peak_level": cap["peak"], "reason": cap["reason"],
+                "settings": asdict(s),
             },
+            "per_channel": [
+                {"label": lbl, "rms_g": float(r), "peak_g": float(pk)}
+                for lbl, r, pk in zip(labels, ch_rms, ch_peak)
+            ],
         }
         base.with_suffix(".json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         if s.write_csv:
@@ -366,5 +377,6 @@ class TriggerController:
             "n": n_ev, "time": cap["t_wall"].strftime("%H:%M:%S"), "channel": ch_label,
             "level": cap["level"], "peak": cap["peak"], "pre_s": pre_s,
             "duration_s": data.shape[1] / fs, "file": str(base.with_suffix(".npz")),
-            "trigger_abs": cap["trigger_abs"],
+            "trigger_abs": cap["trigger_abs"], "reason": cap["reason"],
+            "n_channels": int(data.shape[0]), "ch_rms": ch_rms.tolist(),
         })

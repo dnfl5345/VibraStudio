@@ -15,8 +15,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QHeaderView, QAbstractItemView,
+    QSplitter, QWidget,
 )
 
+from ..config import CHANNEL_COLORS
+from ..daq.playback import load_recording
 from ..dsp import trigger as trg
 from . import theme
 from .views import BaseView, toolbar_row
@@ -41,8 +44,22 @@ def _spin(lo, hi, val, suffix, decimals=2, step=None):
     return s
 
 
+def _peak_decimate(t: np.ndarray, y: np.ndarray, points: int = 3000):
+    """Min/max per bucket so short transients survive in a small plot."""
+    n = y.size
+    if n <= 2 * points:
+        return t, y
+    k = n // points
+    m = points * k
+    yy = y[:m].reshape(points, k)
+    tt = t[:m].reshape(points, k)[:, 0]
+    lo, hi = yy.min(axis=1), yy.max(axis=1)
+    return np.repeat(tt, 2), np.column_stack((lo, hi)).ravel()
+
+
 class TriggerView(BaseView):
     start_stream_requested = Signal()
+    open_recording_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -109,14 +126,31 @@ class TriggerView(BaseView):
         self.plot.addItem(self.event_marks)
 
         # -- event log ------------------------------------------------------------
-        self.table = QTableWidget(0, 7)
+        # Every capture stores ALL enabled channels; "Triggered by" is only
+        # the channel whose band level crossed the threshold first.
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["#", "Time", "Channel", "Level @ trig (g)", "Peak (g)", "Length (s)", "File"])
+            ["#", "Time", "Saved", "Length (s)", "Triggered by", "Reason",
+             "Level @ trig (g)", "Peak (g)", "File"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setMaximumHeight(190)
+        self.open_btn = QPushButton("Analyze in playback")
+        self.open_btn.setToolTip("Open the selected capture in File playback (all tabs)")
+        self.open_btn.setEnabled(False)
+
+        # Preview of the selected capture: every saved channel, one lane each.
+        self.preview_w = pg.PlotWidget()
+        self.preview = self.preview_w.getPlotItem()
+        theme.style_plot(self.preview, "Select a capture to preview all channels",
+                         "Time from trigger (s)", "")
+        self.preview.addLine(x=0, pen=pg.mkPen(theme.RED, width=1, style=Qt.DashLine))
+        self._preview_curves: list = []
+        self._preview_file = ""
+        self._events_by_row: list[dict] = []
         self.hint = QLabel("Signals outside the band are ignored.")
         self.hint.setToolTip("Set the band to where the shaker excites (e.g. its sweep range).")
         self.hint.setStyleSheet(f"color:{theme.TEXT_MUTED};")
@@ -139,12 +173,28 @@ class TriggerView(BaseView):
                                   self.rearm_chk, self.csv_chk, "stretch",
                                   self.force_btn, self.arm_btn))
         lay.addLayout(status)
-        lay.addWidget(self.plot_w, stretch=1)
-        lay.addWidget(self.table)
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(8, 0, 4, 6)
+        lv.addWidget(self.table, stretch=1)
+        lv.addLayout(toolbar_row(self.open_btn, "stretch"))
+        bottom = QSplitter(Qt.Horizontal)
+        bottom.addWidget(left)
+        bottom.addWidget(self.preview_w)
+        bottom.setStretchFactor(0, 5)
+        bottom.setStretchFactor(1, 5)
+        split = QSplitter(Qt.Vertical)
+        split.addWidget(self.plot_w)
+        split.addWidget(bottom)
+        split.setStretchFactor(0, 5)
+        split.setStretchFactor(1, 5)
+        lay.addWidget(split, stretch=1)
 
         # -- wiring ----------------------------------------------------------------
         self.arm_btn.toggled.connect(self._arm_toggled)
         self.force_btn.clicked.connect(self.ctrl.force)
+        self.table.itemSelectionChanged.connect(self._row_selected)
+        self.open_btn.clicked.connect(self._open_selected)
         self.mode_box.currentIndexChanged.connect(self._mode_changed)
         self.thr_line.sigPositionChangeFinished.connect(
             lambda ln: self.thr_spin.setValue(max(1e-4, float(ln.value()))))
@@ -173,9 +223,7 @@ class TriggerView(BaseView):
     def _apply(self, *_) -> None:
         self.ctrl.configure(self.settings(), self.labels)
         thr = self.thr_spin.value()
-        self.thr_line.blockSignals(True)
         self.thr_line.setValue(thr)
-        self.thr_line.blockSignals(False)
         self.rearm_line.setValue(thr * self.ctrl.settings.hysteresis)
 
     def _mode_changed(self, idx: int) -> None:
@@ -247,18 +295,71 @@ class TriggerView(BaseView):
 
     def _log_new_events(self) -> None:
         events = sorted(self.ctrl.events, key=lambda ev: ev["n"])
-        for ev in events[self._shown_events:]:
+        new = events[self._shown_events:]
+        for ev in new:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            vals = [str(ev["n"]), ev["time"], ev["channel"], f"{ev['level']:.4g}",
-                    f"{ev['peak']:.4g}", f"{ev['duration_s']:.2f}", Path(ev["file"]).name]
+            self._events_by_row.append(ev)
+            vals = [str(ev["n"]), ev["time"], f"{ev.get('n_channels', len(self.labels))} ch",
+                    f"{ev['duration_s']:.2f}", ev["channel"], ev.get("reason", "level"),
+                    f"{ev['level']:.4g}", f"{ev['peak']:.4g}", Path(ev["file"]).name]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
-                if c == 6:
+                if c == 8:
                     item.setToolTip(ev["file"])
+                if c == 2:
+                    item.setToolTip("Every enabled channel is saved in the file")
                 self.table.setItem(r, c, item)
-            self.table.scrollToBottom()
         self._shown_events = len(events)
+        if new:
+            self.table.selectRow(self.table.rowCount() - 1)   # show the newest capture
+            self.table.scrollToBottom()
+
+    def _selected_event(self) -> dict | None:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows or rows[0].row() >= len(self._events_by_row):
+            return None
+        return self._events_by_row[rows[0].row()]
+
+    def _open_selected(self) -> None:
+        ev = self._selected_event()
+        if ev is not None:
+            self.open_recording_requested.emit(ev["file"])
+
+    def _row_selected(self) -> None:
+        ev = self._selected_event()
+        self.open_btn.setEnabled(ev is not None)
+        if ev is None or ev["file"] == self._preview_file:
+            return
+        try:
+            rec = load_recording(ev["file"])
+        except Exception as exc:
+            self.preview.setTitle(f"cannot read {Path(ev['file']).name}: {exc}",
+                                  color=theme.RED, size="10pt")
+            return
+        self._preview_file = ev["file"]
+        for c in self._preview_curves:
+            self.preview.removeItem(c)
+        self._preview_curves = []
+        n_ch, n = rec.data.shape
+        t = np.arange(n) / rec.fs - ev.get("pre_s", 0.0)
+        ticks = []
+        for i in range(n_ch):
+            y = rec.data[i].astype(np.float64)
+            y = y - y.mean()
+            span = max(float(np.max(np.abs(y))), 1e-12)
+            lane = float(n_ch - 1 - i)
+            tx, yx = _peak_decimate(t, lane + 0.42 * y / span)
+            curve = self.preview.plot(tx, yx, pen=pg.mkPen(
+                CHANNEL_COLORS[i % len(CHANNEL_COLORS)], width=1.0))
+            self._preview_curves.append(curve)
+            ticks.append((lane, rec.channels[i]))
+        self.preview.getAxis("left").setTicks([ticks])
+        self.preview.setYRange(-0.7, n_ch - 0.3, padding=0)
+        self.preview.setXRange(t[0], t[-1], padding=0.01)
+        self.preview.setTitle(
+            f"Capture #{ev['n']} — all {n_ch} channels (each lane auto-scaled) · "
+            f"triggered by {ev['channel']}", color=theme.TEXT_MUTED, size="10pt")
 
     def update_view(self, engine) -> None:
         """Redraw the level trace (visible tab only)."""

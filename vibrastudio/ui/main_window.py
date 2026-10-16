@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self.view_impact.beam_preset_requested.connect(self.apply_beam_preset)
         self.view_impact.mode_frequency_selected.connect(self._show_mode_in_ods)
         self.view_trigger.start_stream_requested.connect(self._start_for_trigger)
+        self.view_trigger.open_recording_requested.connect(self._open_capture)
         self.playback: RecordingData | None = None
 
         self.view_spec.reset_btn.clicked.connect(
@@ -260,10 +261,11 @@ class MainWindow(QMainWindow):
         if index == 2 and self.playback is None:
             self.open_recording()
 
-    def open_recording(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open recording", "recordings",
-            "Recordings (*.npz *.csv);;All files (*)")
+    def open_recording(self, path: str | None = None) -> None:
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open recording", "recordings",
+                "Recordings (*.npz *.csv);;All files (*)")
         if not path:
             return
         try:
@@ -383,6 +385,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Streaming {len(enabled)} ch @ {self.cfg.acquisition.sample_rate:.0f} Hz ({mode})")
         self.timer.start()
+
+    def _open_capture(self, path: str) -> None:
+        """Re-analyze a trigger capture in every tab via File playback."""
+        if self.engine is not None and self.engine.running:
+            self.stop_streaming()
+        self.open_recording(path)
 
     def _start_for_trigger(self) -> None:
         if self.engine is None or not self.engine.running:
