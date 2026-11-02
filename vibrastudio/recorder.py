@@ -28,6 +28,7 @@ class StreamRecorder:
         self.fs = 0.0
         self.channel_names: list[str] = []
         self.started_at = ""
+        self.extra_meta: dict = {}     # channel map and structure of this run
 
     def start(self, fs: float, channel_names: list[str]) -> None:
         if self.recording:
@@ -92,6 +93,7 @@ class StreamRecorder:
             "samples_per_channel": int(data.shape[1]),
             "duration_sec": data.shape[1] / max(self.fs, 1.0),
             "units": "g",
+            **self.extra_meta,
         }
         base.with_suffix(".json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

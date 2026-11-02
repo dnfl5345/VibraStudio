@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from ..config import ChannelConfig
 from ..dsp.analysis import StreamingAnalyzer
-from ..geometry import AXIS_INDEX, Geometry, auto_map_channels, build, make_line
+from ..geometry import Geometry, auto_map_channels, build, make_line
 from . import theme
 from .views import BaseView, toolbar_row
 
@@ -52,8 +52,13 @@ _MAP_MODES = [("Map X+Z", ("X", "Z")), ("Map X+Y+Z", ("X", "Y", "Z")),
               ("Map Z only", ("Z",)), ("Map X only", ("X",))]
 
 
+# Camera presets: (azimuth, elevation). Front matches a photo taken from -Y.
+_VIEWS = {"3D": (-60, 22), "Front (X-Z)": (-90, 0), "Side (Y-Z)": (0, 0), "Top (X-Y)": (-90, 90)}
+
+
 class OdsView(BaseView):
     channels_mapped = Signal(object)   # list[ChannelConfig] after auto-map
+    rig_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -109,6 +114,13 @@ class OdsView(BaseView):
         self.labels_chk.setChecked(True)
         self.fix_chk = QCheckBox("Fix base")
         self.fix_chk.setChecked(True)
+        self.rig_btn = QPushButton("Sensor Setup…")
+        self.rig_btn.setToolTip("Sensor positions and how each sensor is turned (global axes)")
+        self.frames_chk = QCheckBox("Sensor axes")
+        self.frames_chk.setChecked(True)
+        self.frames_chk.setToolTip("Show each sensor's printed x/y/z axes, to compare with a photo")
+        self.view_box = QComboBox()
+        self.view_box.addItems(list(_VIEWS))
 
         # -- 3D viewport -----------------------------------------------------
         if _HAS_GL:
@@ -136,17 +148,19 @@ class OdsView(BaseView):
             self.view3d = None
 
         # -- amplitude/phase table ------------------------------------------
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Ch", "Node", "Dir", "g RMS", "Phase°"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Ch", "Node", "Sensor", "Global", "mg RMS", "Phase°"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setMaximumWidth(340)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setFixedWidth(400)
 
         body = QHBoxLayout()
         body.addWidget(viewport, stretch=1)
         body.addWidget(self.table)
 
+        self.rig_label = QLabel("Global: +X right, +Y into the view, +Z up")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addLayout(toolbar_row("Frequency", self.freq_spin, self.pick_btn,
@@ -160,6 +174,8 @@ class OdsView(BaseView):
                                   self.build_btn, self.map_box, self.map_btn,
                                   self.fix_chk, self.labels_chk,
                                   "stretch", QLabel("")))
+        lay.addLayout(toolbar_row(self.rig_btn, self.frames_chk, "View", self.view_box,
+                                  "stretch", self.rig_label))
         lay.addLayout(body)
 
         self._phase = 0.0
@@ -178,6 +194,9 @@ class OdsView(BaseView):
         self.build_btn.clicked.connect(self._build_geometry)
         self.map_btn.clicked.connect(self._auto_map)
         self.labels_chk.toggled.connect(lambda *_: self._rebuild_static())
+        self.frames_chk.toggled.connect(lambda *_: self._draw_mounts())
+        self.rig_btn.clicked.connect(self.rig_requested)
+        self.view_box.currentTextChanged.connect(lambda *_: self._set_camera())
         self._shape_changed(self.shape_box.currentIndex())
         self._rebuild_static()
 
@@ -249,7 +268,14 @@ class OdsView(BaseView):
 
         self.table.setRowCount(len(cfgs))
         for i, c in enumerate(cfgs):
-            for j, val in enumerate([c.label, str(c.point), c.direction, "—", "—"]):
+            v = c.vector()
+            k = int(np.argmax(np.abs(v)))
+            where = f"{'+' if v[k] >= 0 else '-'}{'XYZ'[k]}"
+            if abs(abs(v[k]) - 1.0) > 1e-6:
+                where += " ~"                        # tilted: not exactly along that axis
+            node = str(c.point) if c.point else "—"
+            for j, val in enumerate([c.label, node, c.sensor_axis or "—",
+                                     where if c.point else "—", "—", "—"]):
                 item = QTableWidgetItem(val)
                 if j == 0:
                     item.setForeground(pg.mkColor(self.color(i)))
@@ -263,8 +289,8 @@ class OdsView(BaseView):
             return
         for i in range(min(len(self.channel_cfgs), self.table.rowCount(),
                            self._amp.size)):
-            self.table.item(i, 3).setText(f"{self._amp[i]:.4g}")
-            self.table.item(i, 4).setText(f"{np.degrees(self._phi[i]):.1f}")
+            self.table.item(i, 4).setText(f"{1e3 * self._amp[i]:.3g}")
+            self.table.item(i, 5).setText(f"{np.degrees(self._phi[i]):.1f}")
 
     def update_view(self, analyzer: StreamingAnalyzer) -> None:
         """Refresh ODS amplitudes/phases from the current averaged spectra."""
@@ -282,7 +308,9 @@ class OdsView(BaseView):
             return
         from scipy.signal import find_peaks
         a = self._analyzer
-        mean_amp = np.mean(a.amplitude_spectrum("rms"), axis=0)
+        spec = a.amplitude_spectrum("rms")
+        mapped = [i for i, c in enumerate(self.channel_cfgs) if c.point > 0 and i < spec.shape[0]]
+        mean_amp = np.mean(spec[mapped] if mapped else spec, axis=0)
         skip = max(1, int(2.0 / max(a.freq[1], 1e-9)))
         pk, _ = find_peaks(mean_amp[skip:], distance=5)
         pk += skip
@@ -343,6 +371,7 @@ class OdsView(BaseView):
         self.gl_undeformed.setData(pos=g.edge_array())
         self._update_scatter(g.nodes)
         self._draw_axes()
+        self._draw_mounts()
 
         for item in self._gl_labels:
             self.view3d.removeItem(item)
@@ -350,16 +379,49 @@ class OdsView(BaseView):
         if self.labels_chk.isChecked() and g.n_nodes <= 64:
             offset = 0.03 * g.bbox_size()
             for i in range(g.n_nodes):
+                name = g.node_labels[i] if i < len(g.node_labels) else str(i + 1)
                 txt = gl.GLTextItem(pos=g.nodes[i] + offset,
-                                    text=str(i + 1),
+                                    text=name,
                                     color=pg.mkColor(theme.TEXT_MUTED))
                 self.view3d.addItem(txt)
                 self._gl_labels.append(txt)
 
+        self._set_camera()
+
+    def _set_camera(self) -> None:
+        if not _HAS_GL:
+            return
+        g = self.geometry
         center = g.nodes.mean(axis=0) if g.n_nodes else np.zeros(3)
+        az, el = _VIEWS[self.view_box.currentText()]
         self.view3d.opts["center"] = pg.Vector(*center)
         self.view3d.setCameraPosition(distance=2.2 * g.bbox_size() + 0.5,
-                                      elevation=22, azimuth=-60)
+                                      elevation=el, azimuth=az)
+
+    def _draw_mounts(self) -> None:
+        """Each sensor's printed axes at its node (same colors as the global triad)."""
+        if not _HAS_GL:
+            return
+        for item in getattr(self, "_mount_items", []):
+            self.view3d.removeItem(item)
+        self._mount_items: list = []
+        g = self.geometry
+        if not self.frames_chk.isChecked():
+            return
+        length = 0.07 * g.bbox_size()
+        for m in g.params.get("mounts", []):
+            p = g.nodes[m["node"]]
+            R = np.asarray(m["matrix"], dtype=float)
+            for j, name in enumerate("XYZ"):
+                tip = p + length * R[:, j]
+                color = self.AXIS_COLORS[name]
+                line = gl.GLLinePlotItem(pos=np.array([p, tip]), color=_rgba(color, 0.9),
+                                         width=1.6, antialias=True)
+                text = gl.GLTextItem(pos=p + 1.25 * length * R[:, j], text=name.lower(),
+                                     color=pg.mkColor(color))
+                self.view3d.addItem(line)
+                self.view3d.addItem(text)
+                self._mount_items.extend((line, text))
 
     def _update_scatter(self, positions: np.ndarray) -> None:
         g = self.geometry
@@ -386,7 +448,11 @@ class OdsView(BaseView):
             return
 
         self._phase += 0.015 * self.speed.value()
-        global_peak = float(np.max(self._amp)) or 1.0
+        # Scale to channels on the structure: an AUX input must not shrink the shape.
+        on_rig = [i for i, c in enumerate(self.channel_cfgs)
+                  if c.point > 0 and i < self._amp.size]
+        peak = float(np.max(self._amp[on_rig])) if on_rig else 0.0
+        peak = peak or 1.0
         gain = (self.scale.value() / 40.0) * 0.18 * g.bbox_size()
 
         disp = np.zeros_like(g.nodes)
@@ -394,11 +460,10 @@ class OdsView(BaseView):
             if i >= self._amp.size:
                 break
             node = c.point - 1
-            axis = AXIS_INDEX.get(c.direction)
-            if axis is None or not (0 <= node < g.n_nodes):
+            if not (0 <= node < g.n_nodes):
                 continue
-            rel = self._amp[i] / global_peak
-            disp[node, axis] += c.sign * rel * np.cos(self._phase + self._phi[i])
+            rel = self._amp[i] / peak
+            disp[node] += rel * np.cos(self._phase + self._phi[i]) * c.vector()
 
         for i in g.fixed:   # clamped nodes never move
             if 0 <= i < g.n_nodes:

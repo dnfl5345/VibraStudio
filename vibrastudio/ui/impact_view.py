@@ -30,6 +30,8 @@ class ImpactView(BaseView):
     def __init__(self) -> None:
         super().__init__()
         self.channel_cfgs: list[ChannelConfig] = []
+        self.free_len_cm = FREE_LEN_CM
+        self.sensors_from_tip = [(f"S{i+1}", d) for i, d in enumerate(SENSOR_FROM_TIP_CM)]
         self._armed = False
         self._mark = 0
         self._pending: int | None = None   # absolute trigger sample index
@@ -119,6 +121,9 @@ class ImpactView(BaseView):
         self.shape_x = sp.plot(pen=pg.mkPen(theme.ACCENT, width=2),
                                symbol="o", symbolSize=7,
                                symbolBrush=pg.mkBrush(theme.ACCENT_HOVER), symbolPen=None)
+        self.shape_y = sp.plot(pen=pg.mkPen(theme.GREEN, width=2),
+                               symbol="t", symbolSize=7,
+                               symbolBrush=pg.mkBrush(theme.GREEN), symbolPen=None)
         self.shape_z = sp.plot(pen=pg.mkPen("#5aa9d6", width=2),
                                symbol="s", symbolSize=7,
                                symbolBrush=pg.mkBrush("#7ec2e8"), symbolPen=None)
@@ -158,22 +163,28 @@ class ImpactView(BaseView):
         self._last_resp_idx: list[int] = []
 
     # -- guide -----------------------------------------------------------
+    def set_beam(self, free_len_cm: float, sensors_from_tip: list) -> None:
+        """Redraw the guide for a beam: [(name, distance from tip in cm), ...]."""
+        self.free_len_cm = free_len_cm
+        self.sensors_from_tip = list(sensors_from_tip)
+        self._draw_guide()
+
     def _draw_guide(self) -> None:
         gp = self.guide.getPlotItem()
         gp.clear()
-        g = impact_guide(FREE_LEN_CM, SENSOR_FROM_TIP_CM[0])
-        gp.setYRange(-2, FREE_LEN_CM + 2)
+        g = impact_guide(self.free_len_cm, 10.0)
+        gp.setYRange(-2, self.free_len_cm + 2)
 
         # beam line + sensors
-        gp.plot([0.02, 0.02], [0.0, FREE_LEN_CM], pen=pg.mkPen(theme.BORDER, width=3))
-        for i, d in enumerate(SENSOR_FROM_TIP_CM):
+        gp.plot([0.02, 0.02], [0.0, self.free_len_cm], pen=pg.mkPen(theme.BORDER, width=3))
+        for name, d in self.sensors_from_tip:
             gp.plot([0.02], [d], symbol="o", symbolSize=10,
                     symbolBrush=pg.mkBrush(theme.ACCENT_HOVER), symbolPen=None)
-            t = pg.TextItem(f"S{i+1}", color=theme.TEXT_MUTED, anchor=(0, 0.5))
+            t = pg.TextItem(name, color=theme.TEXT_MUTED, anchor=(0, 0.5))
             t.setPos(0.08, d)
             gp.addItem(t)
         jig = pg.TextItem("JIG (fixed)", color=theme.TEXT_FAINT, anchor=(0, 0.5))
-        jig.setPos(0.08, FREE_LEN_CM + 0.5)
+        jig.setPos(0.08, self.free_len_cm + 0.5)
         gp.addItem(jig)
 
         # score curve inside the hammer zone
@@ -384,12 +395,12 @@ class ImpactView(BaseView):
         if not (0 <= r < len(self.modes)) or self.acc is None:
             return
         shape = self.modes[r]["shape"]
-        for direction, curve in (("X", self.shape_x), ("Z", self.shape_z)):
+        for direction, curve in (("X", self.shape_x), ("Y", self.shape_y), ("Z", self.shape_z)):
             pts = []
             for j, (_, ch_i) in enumerate(self._sel_resp):
                 c = self.channel_cfgs[ch_i]
                 if c.direction == direction and j < shape.size:
-                    d_tip = FREE_LEN_CM * (1.0 - c.position)
+                    d_tip = self.free_len_cm * (1.0 - c.position)
                     pts.append((d_tip, c.sign * float(shape[j])))
             pts.sort()
             if pts:

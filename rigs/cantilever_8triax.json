@@ -1,0 +1,23 @@
+{
+  "name": "cantilever_8triax",
+  "description": "Vertical cantilever on the shaker jig, 8 triaxial sensors on the front face, numbered bottom to top. Read from photos 2026-11-02: heights from the tape (top of beam = 0, clamp = 50 cm, about +/-0.5 cm); printed axes from the triad on the Y face. Sensor-to-module order measured from mode shapes, not visible in photos.",
+  "frame": "+X right in the front photo, +Y into the photo, +Z up",
+  "sensors": [
+    {"name": "S1", "module": "cDAQ9189-2196A44Mod6", "position_cm": [0, 0, 0.7],  "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S2", "module": "cDAQ9189-2196A44Mod7", "position_cm": [0, 0, 7.3],  "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S3", "module": "cDAQ9189-2196A44Mod8", "position_cm": [0, 0, 13.6], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S4", "module": "cDAQ9189-2196A44Mod5", "position_cm": [0, 0, 20.7], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S5", "module": "cDAQ9189-2196A44Mod4", "position_cm": [0, 0, 28.0], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S6", "module": "cDAQ9189-2196A44Mod3", "position_cm": [0, 0, 35.1], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S7", "module": "cDAQ9189-2196A44Mod2", "position_cm": [0, 0, 42.2], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S8", "module": "cDAQ9189-2196A44Mod1", "position_cm": [0, 0, 49.0], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}}
+  ],
+  "extra_nodes": [
+    {"name": "Clamp", "position_cm": [0, 0, 0], "fixed": true}
+  ],
+  "edges": [
+    ["Clamp", "S1"], ["S1", "S2"], ["S2", "S3"], ["S3", "S4"],
+    ["S4", "S5"], ["S5", "S6"], ["S6", "S7"], ["S7", "S8"]
+  ],
+  "reference": "S8_Y"
+}

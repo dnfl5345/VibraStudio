@@ -25,6 +25,7 @@ class Geometry:
     edges: list[tuple[int, int]]           # 0-based node index pairs
     params: dict = field(default_factory=dict)
     fixed: list[int] = field(default_factory=list)   # clamped node indices (0-based)
+    node_labels: list[str] = field(default_factory=list)  # shown instead of the node id
 
     @property
     def n_nodes(self) -> int:
@@ -62,6 +63,7 @@ class Geometry:
             "edges": [list(e) for e in self.edges],
             "params": self.params,
             "fixed": [int(i) for i in self.fixed],
+            "node_labels": list(self.node_labels),
         }
 
     @classmethod
@@ -72,6 +74,7 @@ class Geometry:
             edges=[tuple(int(i) for i in e) for e in d.get("edges", [])],
             params=dict(d.get("params", {})),
             fixed=[int(i) for i in d.get("fixed", [])],
+            node_labels=[str(n) for n in d.get("node_labels", [])],
         )
 
 
@@ -183,16 +186,28 @@ def auto_map_channels(
 
     With axes=("X","Z"): ch1->node1/X, ch2->node1/Z, ch3->node2/X, ...
     With axes=("Z",):    ch1->node1/Z, ch2->node2/Z, ...
-    Channels beyond the last node wrap back to node 1. Labels are rewritten
-    to S<node>_<axis> so the table always reads consistently with the map.
+    Labels are rewritten to S<node>_<axis> so the table reads consistently
+    with the map. Channels beyond the last node become AUX<n> (point 0): still
+    recorded, but with no place on the structure.
     """
     n_axes = max(1, len(axes))
     out = []
+    aux = 0
     for i, ch in enumerate(channels):
-        node = (i // n_axes) % max(1, geometry.n_nodes) + 1
-        ch.point = node
-        ch.direction = axes[i % n_axes]
-        ch.label = f"S{node}_{ch.direction}"
-        ch.position = geometry.nodes[node - 1, 2] / max(geometry.bbox_size(), 1e-9)
+        node = i // n_axes + 1
+        if ch.axis_vec is not None:         # leaving a rig: its signs no longer apply
+            ch.sign = 1
+        ch.axis_vec = None
+        ch.sensor_axis = ""
+        if node > geometry.n_nodes:
+            aux += 1
+            ch.point = 0
+            ch.label = f"AUX{aux}"
+            ch.position = 0.0
+        else:
+            ch.point = node
+            ch.direction = axes[i % n_axes]
+            ch.label = f"S{node}_{ch.direction}"
+            ch.position = geometry.nodes[node - 1, 2] / max(geometry.bbox_size(), 1e-9)
         out.append(ch)
     return out

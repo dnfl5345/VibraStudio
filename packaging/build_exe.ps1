@@ -25,6 +25,7 @@ if (-not (Test-Path $py)) { Write-Error "venv not found: $py"; exit 1 }
     --collect-submodules nidaqmx `
     --collect-submodules OpenGL `
     --hidden-import pyqtgraph.opengl `
+    --add-data "rigs;rigs" `
     run_app.py
 
 if ($LASTEXITCODE -eq 0) {

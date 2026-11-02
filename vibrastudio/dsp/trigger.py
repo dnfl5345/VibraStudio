@@ -118,6 +118,7 @@ class TriggerController:
         self.out_dir = Path(out_dir)
         self.settings = TriggerSettings()
         self.labels: list[str] = []
+        self.extra_meta: dict = {}             # channel map and structure of this run
         self.state = DISARMED
         self.events: list[dict] = []
         self.message = ""
@@ -356,6 +357,7 @@ class TriggerController:
             "started_at": stamp, "sample_rate_hz": fs, "channels": labels,
             "samples_per_channel": int(data.shape[1]),
             "duration_sec": data.shape[1] / fs, "units": "g",
+            **self.extra_meta,
             "trigger": {
                 "pre_trigger_s": pre_s, "trigger_sample": int(round(pre_s * fs)),
                 "channel": ch_label, "level_at_trigger": cap["level"],

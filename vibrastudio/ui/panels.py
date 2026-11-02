@@ -45,10 +45,12 @@ class ChannelTable(QTableWidget):
         self.setMinimumHeight(260)
         self.itemChanged.connect(self._on_item_changed)
         self._loading = False
+        self._mounted: list = []
 
     def load(self, channels: list[ChannelConfig]) -> None:
         self._loading = True
         self.setRowCount(len(channels))
+        self._mounted = [(c.direction, c.sign, c.axis_vec, c.sensor_axis) for c in channels]
         for i, ch in enumerate(channels):
             on = QTableWidgetItem()
             on.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
@@ -101,17 +103,25 @@ class ChannelTable(QTableWidget):
         for r in range(self.rowCount()):
             try:
                 dir_box = self.cellWidget(r, 4)
+                direction = dir_box.currentText() if dir_box else "Z"
+                sign = -1 if self.item(r, self.COL_INV).checkState() == Qt.Checked else 1
+                vec, sensor_axis = None, ""
+                if r < len(self._mounted):
+                    d0, s0, v0, a0 = self._mounted[r]
+                    sensor_axis = a0
+                    if (d0, s0) == (direction, sign):   # edited by hand -> vector is stale
+                        vec = v0
                 out.append(
                     ChannelConfig(
                         physical_channel=self.item(r, 2).text().strip(),
                         label=self.item(r, 1).text().strip() or f"CH{r+1}",
                         enabled=self.item(r, 0).checkState() == Qt.Checked,
                         point=int(float(self.item(r, 3).text())),
-                        direction=dir_box.currentText() if dir_box else "Z",
+                        direction=direction,
                         position=float(self.item(r, self.COL_POS).text()),
                         sensitivity_mv_g=float(self.item(r, self.COL_SENS).text()),
                         is_reference=self.item(r, self.COL_REF).checkState() == Qt.Checked,
-                        sign=-1 if self.item(r, self.COL_INV).checkState() == Qt.Checked else 1,
+                        sign=sign, axis_vec=vec, sensor_axis=sensor_axis,
                     )
                 )
             except (ValueError, AttributeError):

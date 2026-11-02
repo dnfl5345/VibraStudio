@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QSettings, QTimer, Signal
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QMainWindow, QMessageBox, QTabWidget, QWidget,
 )
@@ -23,7 +24,9 @@ from ..daq.playback import PlaybackBackend, RecordingData, load_recording
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
+from ..rig import Rig
 from .health_view import HealthView
+from .rig_dialog import RigDialog
 from .trigger_view import TriggerView
 from .impact_view import ImpactView
 from .ods_view import OdsView
@@ -100,6 +103,7 @@ class MainWindow(QMainWindow):
         self.sidebar.source_box.currentIndexChanged.connect(self._on_source_changed)
         self.view_ods.channels_mapped.connect(self._on_channels_mapped)
         self.view_impact.beam_preset_requested.connect(self.apply_beam_preset)
+        self.view_ods.rig_requested.connect(self.open_rig_dialog)
         self.view_impact.mode_frequency_selected.connect(self._show_mode_in_ods)
         self.view_trigger.start_stream_requested.connect(self._start_for_trigger)
         self.view_trigger.open_recording_requested.connect(self._open_capture)
@@ -121,6 +125,9 @@ class MainWindow(QMainWindow):
             cfg.channels = default_channel_template()
         self.sidebar.load_from_config(cfg)
         self.view_ods.set_geometry_dict(cfg.geometry)
+        self.rig: Rig | None = None
+        self._detected: list[str] = []
+        self._restore_rig()
         if not cfg.acquisition.simulate:
             QTimer.singleShot(300, lambda: self.detect_hardware(auto=True))
 
@@ -136,6 +143,10 @@ class MainWindow(QMainWindow):
         self.view_impact.set_channel_configs(enabled)
         self.view_health.set_channel_configs(enabled)
         self.view_trigger.set_channels(labels)
+        run_meta = {"channel_map": [asdict(c) for c in enabled],
+                    "geometry": self.view_ods.geometry_dict()}
+        self.recorder.extra_meta = run_meta
+        self.view_trigger.ctrl.extra_meta = run_meta
         self.sidebar.set_channel_count(len(enabled), len(self.cfg.channels))
 
     # -- device auto-connect ---------------------------------------------
@@ -178,7 +189,9 @@ class MainWindow(QMainWindow):
 
         # Success: map channels and switch to hardware source (idle only).
         if self.engine is None or not self.engine.running:
-            self.cfg.channels = channels_from_detected(res.channels)
+            self._detected = list(res.channels)
+            self.cfg.channels = (self.rig.to_channels(res.channels) if self.rig
+                                 else channels_from_detected(res.channels))
             self.sidebar.channel_table.load(self.cfg.channels)
             self.sidebar.source_box.setCurrentIndex(0)
         self.sidebar.set_device_info(res.summary(), connected=True)
@@ -193,6 +206,47 @@ class MainWindow(QMainWindow):
         self.cfg.channels = default_channel_template()
         self.sidebar.channel_table.load(self.cfg.channels)
 
+    # -- sensor setup ---------------------------------------------------------
+    def _restore_rig(self) -> None:
+        path = QSettings("VibraStudio", "VibraStudio").value("last_rig", "")
+        if path and Path(path).exists():
+            try:
+                self.apply_rig(Rig.load(path), remember=False)
+            except Exception as exc:
+                self.statusBar().showMessage(f"Could not load the last rig: {exc}")
+
+    def open_rig_dialog(self) -> None:
+        if self.engine is not None and self.engine.running:
+            QMessageBox.information(self, "Sensor setup",
+                                    "Stop streaming first: this changes the channel list.")
+            return
+        modules = list(dict.fromkeys(p.rsplit("/", 1)[0] for p in self._detected))
+        dlg = RigDialog(self.rig, modules, self)
+        if dlg.exec() == RigDialog.Accepted:
+            self.apply_rig(dlg.result_rig)
+
+    def apply_rig(self, rig: Rig, remember: bool = True) -> None:
+        """Use a rig: channel map, signs, node-link structure and beam guide."""
+        self.rig = rig
+        self.cfg.channels = rig.to_channels(self._detected or None)
+        self.sidebar.channel_table.load(self.cfg.channels)
+        self.view_ods.geometry = rig.to_geometry()
+        self.view_ods._user_geometry = True
+        self.view_ods._rebuild_static()
+        self.view_ods.rig_label.setText(
+            f"{rig.name}   ·   Global: +X right, +Y into the view, +Z up")
+        fixed = [n for n in rig.extra_nodes if n.get("fixed")]
+        if fixed and rig.sensors:
+            base = float(fixed[0]["position_cm"][2])
+            tip = max(s.position_cm[2] for s in rig.sensors)
+            self.view_impact.set_beam(tip - base,
+                                      [(s.name, tip - s.position_cm[2]) for s in rig.sensors])
+        self.refresh_channel_dependent_ui()
+        if remember and rig.path:
+            QSettings("VibraStudio", "VibraStudio").setValue("last_rig", rig.path)
+        self.statusBar().showMessage(
+            f"Rig applied: {rig.name}, {len(rig.sensors)} sensors")
+
     def _on_channels_mapped(self, mapped: list) -> None:
         """ODS auto-map rewrote node/direction/labels — sync the table.
 
@@ -204,7 +258,12 @@ class MainWindow(QMainWindow):
             if m is not None:
                 ch.label = m.label
                 ch.point, ch.direction, ch.position = m.point, m.direction, m.position
+                ch.sign, ch.axis_vec, ch.sensor_axis = m.sign, m.axis_vec, m.sensor_axis
         self.sidebar.channel_table.load(self.cfg.channels)
+        # A manual map replaces the rig; do not bring it back on the next connect.
+        self.rig = None
+        QSettings("VibraStudio", "VibraStudio").remove("last_rig")
+        self.view_ods.rig_label.setText("Global: +X right, +Y into the view, +Z up")
         self.statusBar().showMessage(
             f"Channels auto-mapped onto {self.view_ods.geometry.name} "
             f"({self.view_ods.geometry.n_nodes} nodes)")
@@ -218,6 +277,9 @@ class MainWindow(QMainWindow):
         Also builds the matching ODS geometry: base(fixed) - S4..S1 - tip,
         node ids 1..6 bottom-up, so the 3D deflection animation uses the
         true sensor heights and a clamped base."""
+        if self.rig is not None:     # a loaded rig already knows the real layout
+            self.open_rig_dialog()
+            return
         import numpy as np
 
         from ..geometry import Geometry
@@ -275,7 +337,7 @@ class MainWindow(QMainWindow):
             return
 
         self.playback = rec
-        self.cfg.channels = self._channels_from_labels(rec.channels)
+        self.cfg.channels = self._recording_channels(rec)
         self.sidebar.channel_table.load(self.cfg.channels)
         self.sidebar.source_box.setCurrentIndex(2)
         self.sidebar.fs_box.setCurrentText(f"{rec.fs:g}")
@@ -290,6 +352,25 @@ class MainWindow(QMainWindow):
         if self.engine is not None and self.engine.running:
             self.stop_streaming()
         self.start_streaming()
+
+    def _recording_channels(self, rec: RecordingData) -> list[ChannelConfig]:
+        """Channel map of a file: its own if stored, else from the rig on request."""
+        stored = rec.meta.get("channel_map") or []
+        if len(stored) == len(rec.channels):
+            if rec.meta.get("geometry"):
+                self.view_ods.set_geometry_dict(rec.meta["geometry"])
+            return [ChannelConfig(**{**c, "physical_channel": f"file/ch{i}"})
+                    for i, c in enumerate(stored)]
+        if self.rig is not None:
+            legacy = self.rig.legacy_channels(rec.channels)
+            if legacy and QMessageBox.question(
+                    self, "Older recording",
+                    "This file has no sensor map (recorded before it was stored).\n"
+                    f"Apply rig \"{self.rig.name}\", assuming S1, S2, ... in the file "
+                    "are modules Mod1, Mod2, ... ?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
+                return legacy
+        return self._channels_from_labels(rec.channels)
 
     @staticmethod
     def _channels_from_labels(labels: list[str]) -> list[ChannelConfig]:
@@ -313,6 +394,12 @@ class MainWindow(QMainWindow):
     def start_streaming(self) -> None:
         self.sidebar.apply_to_config(self.cfg)
         is_playback = self.sidebar.source_box.currentIndex() == 2
+        if (not is_playback and not self.cfg.acquisition.simulate
+                and any(c.physical_channel.startswith("file/") for c in self.cfg.channels)):
+            # Back to hardware after replaying a file.
+            self.cfg.channels = (self.rig.to_channels(self._detected or None) if self.rig
+                                 else channels_from_detected(self._detected))
+            self.sidebar.channel_table.load(self.cfg.channels)
 
         if is_playback:
             if self.playback is None:

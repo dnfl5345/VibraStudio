@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+import numpy as np
+
 # 18 visually distinct channel colors tuned for the dark theme.
 CHANNEL_COLORS = [
     "#e08b6d", "#e0b25a", "#a3c95a", "#5bbf9a", "#5aa9d6", "#7a8ce0",
@@ -29,6 +31,16 @@ class ChannelConfig:
     sensitivity_mv_g: float = 100.0
     is_reference: bool = False    # reference channel for FRF / ODS phase
     sign: int = 1                 # +1/-1: flips a left-handed sensor axis
+    axis_vec: list | None = None  # measurement direction in global axes (from a rig)
+    sensor_axis: str = ""         # printed sensor axis this channel reads
+
+    def vector(self) -> np.ndarray:
+        """Unit vector of a positive reading, in global axes."""
+        if self.axis_vec is not None:
+            return np.asarray(self.axis_vec, dtype=float)
+        v = np.zeros(3)
+        v["XYZ".index(self.direction)] = float(self.sign)
+        return v
 
     def color(self, index: int) -> str:
         return CHANNEL_COLORS[index % len(CHANNEL_COLORS)]

@@ -8,8 +8,9 @@ view — FFT averaging, octave, FRF, ODS — works identically on stored data.
 from __future__ import annotations
 
 import csv
+import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,7 @@ class RecordingData:
     fs: float
     channels: list[str]
     path: str
+    meta: dict = field(default_factory=dict)     # sidecar .json, if any
 
     @property
     def duration(self) -> float:
@@ -29,7 +31,17 @@ class RecordingData:
 
 def load_recording(path: str | Path) -> RecordingData:
     """Load a .npz (VibraStudio) or .csv (time_s + channel columns) recording."""
-    path = Path(path)
+    rec = _load_samples(Path(path))
+    sidecar = Path(path).with_suffix(".json")
+    if sidecar.exists():
+        try:
+            rec.meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+    return rec
+
+
+def _load_samples(path: Path) -> RecordingData:
     if path.suffix.lower() == ".npz":
         with np.load(path, allow_pickle=False) as z:
             data = np.asarray(z["data"], dtype=np.float64)
