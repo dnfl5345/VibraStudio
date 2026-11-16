@@ -1,9 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.hooks import copy_metadata
 
-datas = []
-hiddenimports = ['pyqtgraph.opengl']
+datas = [('rigs', 'rigs')]
+binaries = []
+hiddenimports = ['pyqtgraph.opengl', 'mpl_toolkits.mplot3d']
 datas += copy_metadata('nidaqmx')
 datas += copy_metadata('nitypes')
 datas += copy_metadata('hightime')
@@ -11,12 +13,14 @@ datas += copy_metadata('deprecation')
 datas += copy_metadata('tzlocal')
 hiddenimports += collect_submodules('nidaqmx')
 hiddenimports += collect_submodules('OpenGL')
+tmp_ret = collect_all('imageio_ffmpeg')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
     ['run_app.py'],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

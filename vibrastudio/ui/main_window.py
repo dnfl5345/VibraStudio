@@ -39,6 +39,19 @@ from .views import (
 GUI_TICK_MS = 60
 
 
+def _differs(stored: list[dict], mapped: list[ChannelConfig]) -> bool:
+    """True if a file's own channel map places inputs differently than ``mapped``."""
+    for s, m in zip(stored, mapped):
+        vec = s.get("axis_vec")
+        if vec is None:
+            v = [0.0, 0.0, 0.0]
+            v["XYZ".index(s.get("direction", "Z"))] = float(s.get("sign", 1))
+            vec = v
+        if int(s.get("point", 0)) != m.point or not np.allclose(vec, m.vector()):
+            return True
+    return False
+
+
 class MainWindow(QMainWindow):
     _connect_finished = Signal(object, bool)  # (ConnectResult, was_auto)
 
@@ -104,6 +117,7 @@ class MainWindow(QMainWindow):
         self.view_ods.channels_mapped.connect(self._on_channels_mapped)
         self.view_impact.beam_preset_requested.connect(self.apply_beam_preset)
         self.view_ods.rig_requested.connect(self.open_rig_dialog)
+        self.view_ods.video_requested.connect(self.open_ods_video)
         self.view_impact.mode_frequency_selected.connect(self._show_mode_in_ods)
         self.view_trigger.start_stream_requested.connect(self._start_for_trigger)
         self.view_trigger.open_recording_requested.connect(self._open_capture)
@@ -224,6 +238,12 @@ class MainWindow(QMainWindow):
         dlg = RigDialog(self.rig, modules, self)
         if dlg.exec() == RigDialog.Accepted:
             self.apply_rig(dlg.result_rig)
+
+    def open_ods_video(self) -> None:
+        from .ods_video_dialog import OdsVideoDialog
+        rec_dir = Path(self.recorder.out_dir) if hasattr(self, "recorder") else Path("recordings")
+        dlg = OdsVideoDialog(self.rig, self.playback.path if self.playback else "", str(rec_dir), self)
+        dlg.exec()
 
     def apply_rig(self, rig: Rig, remember: bool = True) -> None:
         """Use a rig: channel map, signs, node-link structure and beam guide."""
@@ -357,6 +377,17 @@ class MainWindow(QMainWindow):
         """Channel map of a file: its own if stored, else from the rig on request."""
         stored = rec.meta.get("channel_map") or []
         if len(stored) == len(rec.channels):
+            by_rig = self.rig.channels_for_recording(stored) if self.rig is not None else None
+            if by_rig is not None and _differs(stored, by_rig) and QMessageBox.question(
+                    self, "Sensor map",
+                    f"This file was recorded with a different sensor map.\n"
+                    f"Use rig \"{self.rig.name}\" instead (matched by physical channel, "
+                    f"{sum(1 for c in by_rig if c.point)} of {len(by_rig)} inputs)?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
+                self.view_ods.geometry = self.rig.to_geometry()
+                self.view_ods._user_geometry = True
+                self.view_ods._rebuild_static()
+                return by_rig
             if rec.meta.get("geometry"):
                 self.view_ods.set_geometry_dict(rec.meta["geometry"])
             return [ChannelConfig(**{**c, "physical_channel": f"file/ch{i}"})

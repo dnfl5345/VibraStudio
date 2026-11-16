@@ -26,6 +26,18 @@ def _selftest() -> int:
     except Exception as exc:
         report["opengl"] = f"FAIL: {exc}"
 
+    try:
+        import matplotlib  # noqa: F401
+        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+        report["matplotlib"] = True
+    except Exception as exc:
+        report["matplotlib"] = f"FAIL: {exc}"
+    try:
+        import imageio_ffmpeg
+        report["ffmpeg"] = Path(imageio_ffmpeg.get_ffmpeg_exe()).exists()
+    except Exception as exc:
+        report["ffmpeg"] = f"FAIL: {exc}"
+
     out = Path(sys.executable).parent / "selftest.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report))
@@ -133,7 +145,56 @@ def _livecheck(seconds: float) -> int:
     return finish(0 if ok else 1)
 
 
+def _ods_video(argv: list[str]) -> int:
+    """Headless 3D ODS video export from a recording.
+
+    VibraStudio.exe --ods-video FILE [--rig RIG.json] [--mode peaks|list|sweep|time]
+        [--freqs 7,46.1] [--fmin 3 --fmax 500 --peaks 6] [--t0 S --t1 S --slow 20]
+        [--lo 3,3,3 --hi 400] [--size 1920x1080] [--fps 30] [--out FILE.mp4]
+    """
+    import argparse
+    from pathlib import Path
+
+    from .daq.playback import load_recording
+    from .dsp.ods_video import model_from
+    from .rig import Rig
+    from .ui.ods_video_render import VideoOptions, build_frames, resolve_mapping, write_video
+
+    ap = argparse.ArgumentParser(prog="VibraStudio --ods-video")
+    ap.add_argument("file")
+    ap.add_argument("--rig"); ap.add_argument("--map", default="auto", choices=["auto", "rig", "file"])
+    ap.add_argument("--mode", default="peaks", choices=["peaks", "list", "sweep", "time"])
+    ap.add_argument("--freqs", default="")
+    ap.add_argument("--peaks", type=int, default=6)
+    ap.add_argument("--fmin", type=float, default=3.0); ap.add_argument("--fmax", type=float, default=500.0)
+    ap.add_argument("--each", type=float, default=3.0); ap.add_argument("--sweep-seconds", type=float, default=20.0)
+    ap.add_argument("--t0", type=float, default=0.0); ap.add_argument("--t1", type=float, default=None)
+    ap.add_argument("--slow", type=float, default=20.0)
+    ap.add_argument("--lo", default="3,3,3"); ap.add_argument("--hi", type=float, default=400.0)
+    ap.add_argument("--size", default="1920x1080"); ap.add_argument("--fps", type=float, default=30.0)
+    ap.add_argument("--out")
+    a = ap.parse_args(argv)
+    rec = load_recording(a.file)
+    rig = Rig.load(a.rig) if a.rig else None
+    chans, geo, how = resolve_mapping(rec, rig, a.map)
+    model = model_from(geo, chans, rec.data.shape[0])
+    w, h = (int(v) for v in a.size.lower().split("x"))
+    o = VideoOptions(mode=a.mode, freqs=tuple(float(v) for v in a.freqs.split(",") if v.strip()),
+                     n_peaks=a.peaks, fmin=a.fmin, fmax=a.fmax, seconds_each=a.each,
+                     sweep_seconds=a.sweep_seconds, t0=a.t0, t1=a.t1, slow=a.slow,
+                     lo_xyz=tuple(float(v) for v in a.lo.split(",")), hi_hz=a.hi, fps=a.fps, size=(w, h))
+    frames, strip = build_frames(rec.data, rec.fs, model, o, Path(a.file).stem)
+    out = Path(a.out or Path(a.file).with_name(f"{Path(a.file).stem}_ods_{a.mode}.mp4"))
+    print(f"mapping: {how}; {len(frames)} frames -> {out}")
+    res = write_video(frames, model, strip, out, (w, h), a.fps, stills=(len(frames) // 3,))
+    print(f"written {res}")
+    return 0
+
+
 def main() -> int:
+    if "--ods-video" in sys.argv:
+        i = sys.argv.index("--ods-video")
+        return _ods_video(sys.argv[i + 1:])
     if "--selftest" in sys.argv:
         return _selftest()
     if "--livecheck" in sys.argv:

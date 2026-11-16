@@ -26,6 +26,13 @@ Python(PySide6 + pyqtgraph)으로 구현했습니다.
 
 - **다중 섀시**: 같은 링크의 cDAQ-9189 여러 대를 자동 탐색·등록·예약하고 **하나의 동기 태스크**로 수집 (2섀시 × 8모듈 = 48채널 실측 검증, 섀시 간 지연 0.00 ms). 3입력 모듈은 3축 센서(X/Y/Z) 1개로 자동 매핑
 - **센서 장착/글로벌 좌표 (Sensor Setup)**: ODS 탭에서 센서별 위치(cm), 인쇄된 X/Y/Z 축이 향하는 글로벌 방향, 설치 기울기, 연결 모듈을 지정. 오른손/왼손 좌표계를 자동 판정하고, 3D 뷰에 센서별 축을 함께 그려 사진과 대조할 수 있음. 리그는 JSON(`rigs/`)으로 저장되고, 녹화 파일에는 채널 맵과 구조가 함께 저장되어 재생 시 그대로 복원됨
+- **3D ODS 영상 내보내기 (ODS 탭 → `Export Video…`)**: 녹화 파일에서 **3D 등각 / 정면(X-Z) / 측면(Y-Z) / 탑뷰(X-Y)** 4개 뷰를 동기화한 MP4(H.264)를 만듦. 아래 띠에 스펙트럼(현재 주파수 커서) 또는 시간 파형(현재 시각 커서)
+  - 모드: **공진 피크**(자동 탐색한 피크마다 형상 애니메이션) · **지정 주파수** · **주파수 스윕**(한 스케일로 대역을 훑어 공진에서 형상이 커지고 위상이 도는 모습) · **시간 응답**(FFT 적분 변위를 슬로모션으로: 충격 자유진동, 가진 시작 등)
+  - 노드별 3D 운동은 노드에 걸린 모든 채널의 전역 방향 벡터로 최소제곱 복원(1·2·3축 모두 가능). 탑뷰에는 각 높이의 궤적(타원)/잔상이 그려짐
+  - 센서 맵: 리그를 **물리 채널 기준**으로 녹화 파일에 적용(다른 맵으로 녹화된 파일도 올바른 위치·방향으로 복원) 또는 파일 자체 맵
+  - 시간 응답은 축별 저역 차단을 따로 둠: 해머가 센서를 직접 치면 적분 결과에 충격 전후 대칭의 저주파 흔들림이 생기므로, 그 방향에 모드가 없으면 차단 주파수를 올림
+  - 명령줄: `VibraStudio.exe --ods-video FILE.npz --rig rigs\cantilever_8triax.json --mode peaks|list|sweep|time ...` (자체 점검: `python tools\check_ods_video.py`)
+- **재생 시 리그 재적용**: 리그가 적용된 상태에서 다른 센서 맵으로 녹화된 파일을 열면, 물리 채널 기준으로 리그를 적용할지 물음
 - **오프라인 섀시 처리**: 등록돼 있지만 응답하지 않는 섀시(분리된 섀시)는 연결 시 자동 제외되고, 옛 설정에 남은 채널은 시작 시 확인 후 제외
 - **헤드리스 수집 테스트**: `VibraStudio.exe --livecheck 30` → exe 옆 `livecheck.txt/json` (소스 실행 시 `outputs/`)
 - **레코딩**: 스트리밍 중 NPZ(+메타데이터 JSON, 옵션 CSV) 저장
@@ -227,12 +234,14 @@ vibrastudio/
 ├── dsp/
 │   └── analysis.py    # StreamingAnalyzer: 평균화 자기/크로스 스펙트럼,
 │                      #  PSD, 적분, FRF/Coherence, ODS, 옥타브, 포락선, 메트릭
+│   └── ods_video.py   # 노드 3D 운동 복원, 스펙트럴 ODS 형상, 시간 적분, 영상 프레임
 ├── recorder.py        # 스트림 레코더 (NPZ/CSV, 별도 writer 스레드)
 └── ui/
     ├── theme.py       # 다크 테마 (QSS + pyqtgraph)
     ├── panels.py      # 사이드바: 수집/해석/채널/상태 카드
     ├── views.py       # Time/Spectrum/Spectrogram/Octave/Envelope/FRF/Metrics
     ├── ods_view.py    # ODS 애니메이션 뷰
+    ├── ods_video_dialog.py / ods_video_render.py  # 3D ODS 영상 내보내기 (4뷰, MP4)
     └── main_window.py # 엔진-분석기-뷰 배선, GUI 틱(60 ms)
 ```
 
@@ -257,4 +266,4 @@ Peak/RMS/PSD/dB 스케일과 윈도우 보정(S1/S2)을 적용하므로 단위�
 ## 요구 사항
 
 - Windows + NI-DAQmx 런타임 (하드웨어 사용 시)
-- Python 3.10+, PySide6, pyqtgraph, numpy, scipy, nidaqmx
+- Python 3.10+, PySide6, pyqtgraph, numpy, scipy, nidaqmx, matplotlib, imageio-ffmpeg (영상 내보내기)

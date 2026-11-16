@@ -205,6 +205,33 @@ class Rig:
         lo, hi = (min(zs), max(zs)) if zs else (0.0, 1.0)
         return lambda z: (z - lo) / ((hi - lo) or 1.0)
 
+    def channels_for_recording(self, channel_map: list[dict]) -> list[ChannelConfig] | None:
+        """Rig mapping for a recording that stored its channel map.
+
+        Rows are matched by physical channel, so a file recorded with another
+        sensor map (e.g. a plain auto-map before the rig existed) still gets
+        the rig's positions and directions. Returns None when no row matches.
+        Rows get physical_channel 'file/ch<i>' like any playback channel.
+        """
+        base = {c.physical_channel: c for c in self.to_channels()}
+        out, hits, aux = [], 0, 0
+        for i, entry in enumerate(channel_map):
+            c = base.get(str(entry.get("physical_channel", "")))
+            if c is not None:
+                hits += 1
+                out.append(ChannelConfig(**{**c.__dict__, "physical_channel": f"file/ch{i}",
+                                            "enabled": bool(entry.get("enabled", True))}))
+            else:
+                aux += 1
+                out.append(ChannelConfig(physical_channel=f"file/ch{i}", label=f"AUX{aux}",
+                                         point=0, direction="Z", position=0.0))
+        if not hits:
+            return None
+        ref = next((c for c in out if c.label == self.reference and c.point), None)
+        for c in out:
+            c.is_reference = c is ref
+        return out
+
     def legacy_channels(self, labels: list[str]) -> list[ChannelConfig] | None:
         """Mapping for a recording made before files stored their channel map.
 

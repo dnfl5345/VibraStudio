@@ -59,6 +59,7 @@ _VIEWS = {"3D": (-60, 22), "Front (X-Z)": (-90, 0), "Side (Y-Z)": (0, 0), "Top (
 class OdsView(BaseView):
     channels_mapped = Signal(object)   # list[ChannelConfig] after auto-map
     rig_requested = Signal()
+    video_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -121,6 +122,9 @@ class OdsView(BaseView):
         self.frames_chk.setToolTip("Show each sensor's printed x/y/z axes, to compare with a photo")
         self.view_box = QComboBox()
         self.view_box.addItems(list(_VIEWS))
+        self.video_btn = QPushButton("Export Video…")
+        self.video_btn.setToolTip("3D / front / side / top ODS video from a recording:\n"
+                                  "resonance shapes, a frequency sweep, or the time response")
 
         # -- 3D viewport -----------------------------------------------------
         if _HAS_GL:
@@ -175,7 +179,7 @@ class OdsView(BaseView):
                                   self.fix_chk, self.labels_chk,
                                   "stretch", QLabel("")))
         lay.addLayout(toolbar_row(self.rig_btn, self.frames_chk, "View", self.view_box,
-                                  "stretch", self.rig_label))
+                                  self.video_btn, "stretch", self.rig_label))
         lay.addLayout(body)
 
         self._phase = 0.0
@@ -196,6 +200,7 @@ class OdsView(BaseView):
         self.labels_chk.toggled.connect(lambda *_: self._rebuild_static())
         self.frames_chk.toggled.connect(lambda *_: self._draw_mounts())
         self.rig_btn.clicked.connect(self.rig_requested)
+        self.video_btn.clicked.connect(self.video_requested)
         self.view_box.currentTextChanged.connect(lambda *_: self._set_camera())
         self._shape_changed(self.shape_box.currentIndex())
         self._rebuild_static()

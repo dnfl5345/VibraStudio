@@ -1,4 +1,6 @@
 nidaqmx>=1.0.0
+matplotlib>=3.8
+imageio-ffmpeg>=0.5
 numpy>=1.26.0
 scipy>=1.11.0
 PySide6>=6.6.0
