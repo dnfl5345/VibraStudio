@@ -1,11 +1,11 @@
 {
   "name": "cantilever_8triax",
-  "description": "Vertical cantilever on the shaker jig, 8 triaxial sensors on the front face, numbered bottom to top. Read from photos 2026-11-02: heights from the tape (top of beam = 0, clamp = 50 cm, about +/-0.5 cm); printed axes from the triad on the Y face. Sensor-to-module order measured from mode shapes, not visible in photos.",
+  "description": "Vertical cantilever on the shaker jig, 8 triaxial sensors on the front face, numbered bottom to top. Read from photos 2026-11-02: heights from the tape (top of beam = 0, clamp = 50 cm, about +/-0.5 cm); printed axes from the triad on the Y face. Sensor-to-module order measured from mode shapes, not visible in photos. Rewired 2026-11-02 afternoon: Mod1 at the top ... Mod8 at the bottom (3rd bending mode MAC 0.970 on the afternoon captures, 0.554 for the earlier order), confirmed against video of the 18.9 Hz drive.",
   "frame": "+X right in the front photo, +Y into the photo, +Z up",
   "sensors": [
-    {"name": "S1", "module": "cDAQ9189-2196A44Mod6", "position_cm": [0, 0, 0.7],  "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S1", "module": "cDAQ9189-2196A44Mod8", "position_cm": [0, 0, 0.7],  "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
     {"name": "S2", "module": "cDAQ9189-2196A44Mod7", "position_cm": [0, 0, 7.3],  "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
-    {"name": "S3", "module": "cDAQ9189-2196A44Mod8", "position_cm": [0, 0, 13.6], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
+    {"name": "S3", "module": "cDAQ9189-2196A44Mod6", "position_cm": [0, 0, 13.6], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
     {"name": "S4", "module": "cDAQ9189-2196A44Mod5", "position_cm": [0, 0, 20.7], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
     {"name": "S5", "module": "cDAQ9189-2196A44Mod4", "position_cm": [0, 0, 28.0], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
     {"name": "S6", "module": "cDAQ9189-2196A44Mod3", "position_cm": [0, 0, 35.1], "x_to": "-X", "y_to": "-Z", "z_to": "-Y", "tilt_deg": [0, 0, 0], "ai": {"X": 0, "Y": 1, "Z": 2}},
