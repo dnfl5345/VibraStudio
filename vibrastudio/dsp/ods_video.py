@@ -80,8 +80,13 @@ def model_from(geometry, channels, n_rows: int) -> NodeModel:
                      labels, rows, node_of, np.array(vecs).reshape(-1, 3), units)
 
 
-def node_acceleration(data: np.ndarray, model: NodeModel) -> np.ndarray:
-    """(n_nodes, 3, N) global acceleration (g). Unmeasured directions are 0."""
+def node_acceleration(data: np.ndarray, model: NodeModel, base_follows: bool = True) -> np.ndarray:
+    """(n_nodes, 3, N) global acceleration (g). Unmeasured directions are 0.
+
+    Fixed nodes stay at rest, except with ``base_follows``: a fixed node with
+    a sensor within 5 % of the structure span (e.g. 0.7 cm above a clamp on
+    a shaker) is the moving base, so it takes that sensor's motion.
+    """
     n = data.shape[1]
     out = np.zeros((model.n_nodes, 3, n))
     by_node: dict[int, list[int]] = {}
@@ -92,9 +97,17 @@ def node_acceleration(data: np.ndarray, model: NodeModel) -> np.ndarray:
         r = data[[model.rows[j] for j in js]].astype(float)
         r = r - r.mean(axis=1, keepdims=True)
         out[node] = np.linalg.pinv(V) @ r                    # min-norm least squares
+    span = float(np.max(np.ptp(model.nodes, axis=0))) if model.n_nodes > 1 else 1.0
+    measured = sorted(by_node)
     for i in model.fixed:
-        if 0 <= i < model.n_nodes:
-            out[i] = 0.0
+        if not 0 <= i < model.n_nodes:
+            continue
+        out[i] = 0.0
+        if base_follows and measured:
+            dist = [np.linalg.norm(model.nodes[j] - model.nodes[i]) for j in measured]
+            k = int(np.argmin(dist))
+            if dist[k] <= 0.05 * (span or 1.0):
+                out[i] = out[measured[k]]
     return out
 
 
@@ -125,6 +138,7 @@ class SpectralODS:
             seg = seg - seg.mean(axis=1, keepdims=True)
             segs.append(np.fft.rfft(seg * w, axis=1))
         self.X = np.array(segs)                               # (nseg, dof, nf)
+        self._x, self._starts, self._w = x, list(starts), w
         self.freq = np.fft.rfftfreq(nper, 1.0 / fs)
         self.fs, self.nper, self.wsum = fs, nper, w.sum()
         self.n_nodes = acc.shape[0]
@@ -162,29 +176,58 @@ class SpectralODS:
         order = np.argsort(prop["prominences"] + 0.3 * (lv[pk] - lv.max()))[::-1][:n]
         return sorted(float(self.freq[band[k]]) for k in pk[order])
 
-    def shape(self, f: float, ref: int | None = None) -> tuple[np.ndarray, float, float, int]:
-        """Operating shape at ``f``: (n_nodes, 3) complex displacement in mm.
+    def refine(self, b: int) -> float:
+        """Peak frequency between bins (Hann: parabola through log power)."""
+        if not 1 <= b < len(self.freq) - 1:
+            return float(self.freq[b])
+        p = self.auto[:, b - 1:b + 2].sum(axis=0)
+        if not (p[1] >= p[0] and p[1] >= p[2]) or np.any(p <= 0):
+            return float(self.freq[b])
+        a, c, e = np.log(p)
+        den = a - 2 * c + e
+        delta = 0.5 * (a - e) / den if den < 0 else 0.0
+        return float(self.freq[b] + np.clip(delta, -0.5, 0.5) * self.df)
 
-        Phase is relative to ``ref`` (a dof index; default: the strongest
-        direction at that bin). Returns (shape, f_bin, median coherence, ref).
+    def _dft(self, f: float) -> np.ndarray:
+        """(nseg, dof) windowed DFT of every segment at exactly ``f``."""
+        e = np.exp(-2j * np.pi * f * np.arange(self.nper) / self.fs) * self._w
+        out = []
+        for s in self._starts:
+            seg = self._x[:, s:s + self.nper]
+            out.append((seg - seg.mean(axis=1, keepdims=True)) @ e)
+        return np.array(out)
+
+    def shape(self, f: float, ref: int | None = None,
+              exact: bool = True) -> tuple[np.ndarray, float, float, int]:
+        """Operating shape near ``f``: (n_nodes, 3) complex displacement in mm.
+
+        The strongest bin within +-1 bin is taken and, with ``exact``, its
+        peak frequency is refined between bins and the shape is computed by a
+        DFT at that frequency, so a sine drive between two bins keeps its
+        true amplitude and frequency. Phase is relative to ``ref`` (a dof;
+        default the strongest). Returns (shape, frequency, coherence, ref).
         """
         b = self.bin(f)
-        # use the strongest bin within +-1 so a tone between bins is not missed
         lo, hi = max(1, b - 1), min(len(self.freq) - 1, b + 1)
         b = lo + int(np.argmax(self.auto[:, lo:hi + 1].sum(axis=0)))
+        if exact:
+            fx = self.refine(b)
+            Xb = self._dft(fx)
+        else:
+            fx, Xb = float(self.freq[b]), self.X[:, :, b]      # (nseg, dof)
+        auto = (np.abs(Xb) ** 2).mean(axis=0)
         if ref is None:
-            ref = int(np.argmax(self.auto[:, b]))
-        Xb = self.X[:, :, b]                                   # (nseg, dof)
+            ref = int(np.argmax(auto))
         pxy = (np.conj(Xb[:, ref])[:, None] * Xb).mean(axis=0)
-        prr = self.auto[ref, b]
+        prr = auto[ref]
         amp = 2.0 / self.wsum * pxy / np.sqrt(max(prr, 1e-300))   # g, phase vs ref
         with np.errstate(divide="ignore", invalid="ignore"):
-            coh = np.abs(pxy) ** 2 / (prr * self.auto[:, b])
+            coh = np.abs(pxy) ** 2 / (prr * auto)
         # weighted by response power: directions with only noise barely count
-        wgt = self.auto[:, b] * self.dof_ok
+        wgt = auto * self.dof_ok
         coh = float(np.nansum(coh * wgt) / wgt.sum()) if wgt.sum() > 0 else 0.0
-        disp = acc_to_disp_mm(amp, self.freq[b]).reshape(self.n_nodes, 3)
-        return disp, float(self.freq[b]), coh, ref
+        disp = acc_to_disp_mm(amp, fx).reshape(self.n_nodes, 3)
+        return disp, fx, coh, ref
 
 
 def integrate_displacement(acc: np.ndarray, fs: float, lo_hz=(3.0, 3.0, 3.0),
@@ -271,7 +314,7 @@ def sweep_frames(model: NodeModel, ods: SpectralODS, f1: float, f2: float,
     ref = int(np.argmax(ods.auto[:, bins].sum(axis=1)))       # one reference for the sweep
     shapes = []
     for b in bins:
-        s, _, _, _ = ods.shape(ods.freq[b], ref=ref)
+        s, _, _, _ = ods.shape(ods.freq[b], ref=ref, exact=False)
         shapes.append(s)
     shapes = np.array(shapes)                                  # (nb, n, 3)
     peak = float(np.abs(shapes).max())

@@ -19,7 +19,7 @@ from vibrastudio.config import ChannelConfig                      # noqa: E402
 from vibrastudio.dsp import ods_video as ov                         # noqa: E402
 from vibrastudio.geometry import Geometry                           # noqa: E402
 
-fs, T, f0 = 2048.0, 8.0, 20.0
+fs, T, f0 = 2048.0, 8.0, 20.17          # between FFT bins on purpose
 t = np.arange(int(fs * T)) / fs
 w = 2 * np.pi * f0
 d_mm = {1: np.array([0.0, 0.10, 0.0]), 2: np.array([0.02, -0.25, 0.0])}   # global mm amplitude per node
@@ -49,7 +49,8 @@ for n in (1, 2):
     print(f"node {n}: |shape| {np.round(got, 4)} mm, expected {want} (err {err:.4f})")
     ok &= err < 0.02 * np.abs(d_mm[2]).max() + 1e-3
 rel = shape[2, 1] / shape[1, 1]
-print(f"phase node2/node1 Y: {np.degrees(np.angle(rel)):+.1f} deg (expected 180), f bin {fb:.2f} Hz, coh {coh:.3f}")
+print(f"phase node2/node1 Y: {np.degrees(np.angle(rel)):+.1f} deg (expected 180), f {fb:.3f} Hz (true {f0}), coh {coh:.3f}")
+ok &= abs(fb - f0) < 0.02
 ok &= abs(abs(np.degrees(np.angle(rel))) - 180) < 2
 
 disp = ov.integrate_displacement(node_acc, fs, (3, 3, 3), 400)

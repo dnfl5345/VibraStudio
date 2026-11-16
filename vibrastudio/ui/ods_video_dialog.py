@@ -143,6 +143,11 @@ class OdsVideoDialog(QDialog):
         self.t1 = _spin(0, 1e6, 0.0, 3, " s", 0.1)
         self.t1.setSpecialValueText("end")
         self.res = _spin(0.05, 20, 0.5, 2, " Hz", 0.1)
+        from PySide6.QtWidgets import QCheckBox
+        self.base_chk = QCheckBox("Clamp moves with a sensor right next to it (shaker base)")
+        self.base_chk.setChecked(True)
+        self.base_chk.setToolTip("Fixed nodes stay at rest, unless a sensor sits within 5 % of the span:\n"
+                                 "then the clamp is taken to move with it (base excitation).")
         par = QGroupBox("What to show")
         fpar = QFormLayout(par)
         fpar.addRow("Mode", self.mode)
@@ -150,6 +155,7 @@ class OdsVideoDialog(QDialog):
         win = QHBoxLayout(); win.addWidget(self.t0); win.addWidget(QLabel("to")); win.addWidget(self.t1)
         fpar.addRow("Use data from", win)
         fpar.addRow("Spectral resolution", self.res)
+        fpar.addRow(self.base_chk)
 
         # output
         self.out = QLineEdit()
@@ -250,7 +256,8 @@ class OdsVideoDialog(QDialog):
     def options(self) -> VideoOptions:
         mode = MODES[self.mode.currentIndex()][1]
         o = VideoOptions(mode=mode, size=SIZES[self.size.currentIndex()][1], fps=float(self.fps.value()),
-                         t0=self.t0.value(), t1=(self.t1.value() or None), resolution_hz=self.res.value())
+                         t0=self.t0.value(), t1=(self.t1.value() or None), resolution_hz=self.res.value(),
+                         base_follows=self.base_chk.isChecked())
         if mode == "peaks":
             o.fmin, o.fmax, o.n_peaks, o.seconds_each = (self.fmin.value(), self.fmax.value(),
                                                          self.npk.value(), self.each.value())

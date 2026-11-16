@@ -172,6 +172,8 @@ def _ods_video(argv: list[str]) -> int:
     ap.add_argument("--slow", type=float, default=20.0)
     ap.add_argument("--lo", default="3,3,3"); ap.add_argument("--hi", type=float, default=400.0)
     ap.add_argument("--size", default="1920x1080"); ap.add_argument("--fps", type=float, default=30.0)
+    ap.add_argument("--fixed-base", action="store_true",
+                    help="keep fixed nodes at rest even next to a sensor (default: they follow it)")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
     rec = load_recording(a.file)
@@ -182,7 +184,8 @@ def _ods_video(argv: list[str]) -> int:
     o = VideoOptions(mode=a.mode, freqs=tuple(float(v) for v in a.freqs.split(",") if v.strip()),
                      n_peaks=a.peaks, fmin=a.fmin, fmax=a.fmax, seconds_each=a.each,
                      sweep_seconds=a.sweep_seconds, t0=a.t0, t1=a.t1, slow=a.slow,
-                     lo_xyz=tuple(float(v) for v in a.lo.split(",")), hi_hz=a.hi, fps=a.fps, size=(w, h))
+                     lo_xyz=tuple(float(v) for v in a.lo.split(",")), hi_hz=a.hi, fps=a.fps, size=(w, h),
+                     base_follows=not a.fixed_base)
     frames, strip = build_frames(rec.data, rec.fs, model, o, Path(a.file).stem)
     out = Path(a.out or Path(a.file).with_name(f"{Path(a.file).stem}_ods_{a.mode}.mp4"))
     print(f"mapping: {how}; {len(frames)} frames -> {out}")

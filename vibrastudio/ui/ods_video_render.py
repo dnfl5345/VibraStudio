@@ -89,8 +89,9 @@ class Renderer:
         self.l3 = Line3DCollection(P[E], colors=BEAM, linewidths=3)
         a3.add_collection3d(self.l3)
         self.n3, = a3.plot(P[meas, 0], P[meas, 1], P[meas, 2], "o", color=SENSOR, mec="k", ms=fs(6))
+        self.f3 = None
         if fixed.any():
-            a3.plot(P[fixed, 0], P[fixed, 1], P[fixed, 2], "s", color="#c0392b", ms=fs(8))
+            self.f3, = a3.plot(P[fixed, 0], P[fixed, 1], P[fixed, 2], "s", color="#c0392b", ms=fs(8))
         L = 0.18 * span
         o = lo + 0.05 * (hi - lo)
         for k, (name, c) in enumerate(AXIS_COLORS.items()):
@@ -112,9 +113,8 @@ class Renderer:
             lc = LineCollection(P[E][:, :, [i, j]], colors=BEAM, linewidths=3)
             ax.add_collection(lc)
             nodes, = ax.plot(P[meas, i], P[meas, j], "o", color=SENSOR, mec="k", ms=fs(7), zorder=5)
-            if fixed.any():
-                ax.plot(P[fixed, i], P[fixed, j], "s", color="#c0392b", ms=fs(8), zorder=4)
-            self.views.append((ax, i, j, lc, nodes))
+            fx = ax.plot(P[fixed, i], P[fixed, j], "s", color="#c0392b", ms=fs(8), zorder=4)[0]
+            self.views.append((ax, i, j, lc, nodes, fx))
         from matplotlib import colormaps
         cmap = colormaps["viridis"]
         z = P[:, 2]; zn = (z - z.min()) / (np.ptp(z) or 1.0)
@@ -163,9 +163,13 @@ class Renderer:
         self.l3.set_segments(seg)
         m = self.meas
         self.n3.set_data_3d(P[m, 0], P[m, 1], P[m, 2])
-        for ax, i, j, lc, nodes in self.views:
+        fx = self.fixed
+        if self.f3 is not None:
+            self.f3.set_data_3d(P[fx, 0], P[fx, 1], P[fx, 2])
+        for ax, i, j, lc, nodes, fmark in self.views:
             lc.set_segments(seg[:, :, [i, j]])
             nodes.set_data(P[m, i], P[m, j])
+            fmark.set_data(P[fx, i], P[fx, j])
         if fr.path is not None:
             base = self.model.nodes[:, :2]
             for n, ln in enumerate(self.paths):
@@ -254,12 +258,13 @@ class VideoOptions:
     resolution_hz: float = 0.5
     fps: float = 30.0
     size: tuple = (1920, 1080)
+    base_follows: bool = True      # clamp next to a sensor moves with it (shaker base)
 
 
 def build_frames(data: np.ndarray, fs: float, model: NodeModel, o: VideoOptions,
                  name: str = "") -> tuple[list[Frame], Strip]:
     """Frames and strip for one recording (``data``: rows x samples, g)."""
-    acc = ov.node_acceleration(data, model)
+    acc = ov.node_acceleration(data, model, o.base_follows)
     if not model.rows:
         raise ValueError("No channel is placed on the structure (all AUX or disabled).")
     if o.mode == "time":
