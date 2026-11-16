@@ -60,6 +60,7 @@ class OdsView(BaseView):
     channels_mapped = Signal(object)   # list[ChannelConfig] after auto-map
     rig_requested = Signal()
     video_requested = Signal()
+    magnify_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -123,6 +124,9 @@ class OdsView(BaseView):
         self.view_box = QComboBox()
         self.view_box.addItems(list(_VIEWS))
         self.video_btn = QPushButton("Export Video…")
+        self.magnify_btn = QPushButton("Magnify vs Sensors…")
+        self.magnify_btn.setToolTip("Motion magnification of a camera video of the same test,\n"
+                                    "auto-selected sensor points, alpha sweep, comparison with the sensors")
         self.video_btn.setToolTip("3D / front / side / top ODS video from a recording:\n"
                                   "resonance shapes, a frequency sweep, or the time response")
 
@@ -179,7 +183,7 @@ class OdsView(BaseView):
                                   self.fix_chk, self.labels_chk,
                                   "stretch", QLabel("")))
         lay.addLayout(toolbar_row(self.rig_btn, self.frames_chk, "View", self.view_box,
-                                  self.video_btn, "stretch", self.rig_label))
+                                  self.video_btn, self.magnify_btn, "stretch", self.rig_label))
         lay.addLayout(body)
 
         self._phase = 0.0
@@ -201,6 +205,7 @@ class OdsView(BaseView):
         self.frames_chk.toggled.connect(lambda *_: self._draw_mounts())
         self.rig_btn.clicked.connect(self.rig_requested)
         self.video_btn.clicked.connect(self.video_requested)
+        self.magnify_btn.clicked.connect(self.magnify_requested)
         self.view_box.currentTextChanged.connect(lambda *_: self._set_camera())
         self._shape_changed(self.shape_box.currentIndex())
         self._rebuild_static()

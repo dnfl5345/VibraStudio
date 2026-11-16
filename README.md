@@ -32,6 +32,11 @@ Python(PySide6 + pyqtgraph)으로 구현했습니다.
   - 센서 맵: 리그를 **물리 채널 기준**으로 녹화 파일에 적용(다른 맵으로 녹화된 파일도 올바른 위치·방향으로 복원) 또는 파일 자체 맵
   - 시간 응답은 축별 저역 차단을 따로 둠: 해머가 센서를 직접 치면 적분 결과에 충격 전후 대칭의 저주파 흔들림이 생기므로, 그 방향에 모드가 없으면 차단 주파수를 올림
   - 명령줄: `VibraStudio.exe --ods-video FILE.npz --rig rigs\cantilever_8triax.json --mode peaks|list|sweep|time ...` (자체 점검: `python tools\check_ods_video.py`)
+- **모션 증폭 vs 센서 (ODS 탭 → `Magnify vs Sensors…`)**: 같은 시험을 찍은 카메라 영상(정현 가진)을 위상 기반으로 증폭하고 가속도계와 정량 비교
+  - 프레임레이트 자동 검출(조명 깜빡임 앨리어스 중 가진 톤이 보이는 후보; 카메라 메타데이터 오류 대비), 빔·센서 블록 ROI 자동 선택(템플릿 매칭 + 리그 높이에 RANSAC 정합 → px/mm), 가진 주파수 움직임 지도
+  - 협대역 위상 증폭(복소 조향 피라미드 5단, 프레임 단위 위상자 누적이라 영상 길이와 무관한 메모리), α 스윕 → 증폭 영상의 실제 이동을 광류로 재측정해 선형성 판정, **권장 α = 선형을 유지하는 최대값**
+  - 센서별 비교(화면 오른쪽 = −Y, 위 = +Z; 카메라–DAQ 시간 지연은 복소 이득 1개로 정렬): 진폭비·위상차 표, 요약 그림, 증폭 영상 위에 "가속도계 형상 × α" 위치를 겹친 MP4
+  - 명령줄: `VibraStudio.exe --magnify --video V.mp4 --recording R.npz --rig rigs\cantilever_8triax.json --mains 60`
 - **재생 시 리그 재적용**: 리그가 적용된 상태에서 다른 센서 맵으로 녹화된 파일을 열면, 물리 채널 기준으로 리그를 적용할지 물음
 - **오프라인 섀시 처리**: 등록돼 있지만 응답하지 않는 섀시(분리된 섀시)는 연결 시 자동 제외되고, 옛 설정에 남은 채널은 시작 시 확인 후 제외
 - **헤드리스 수집 테스트**: `VibraStudio.exe --livecheck 30` → exe 옆 `livecheck.txt/json` (소스 실행 시 `outputs/`)
@@ -234,7 +239,8 @@ vibrastudio/
 ├── dsp/
 │   └── analysis.py    # StreamingAnalyzer: 평균화 자기/크로스 스펙트럼,
 │                      #  PSD, 적분, FRF/Coherence, ODS, 옥타브, 포락선, 메트릭
-│   └── ods_video.py   # 노드 3D 운동 복원, 스펙트럴 ODS 형상, 시간 적분, 영상 프레임
+│   ├── ods_video.py   # 노드 3D 운동 복원, 스펙트럴 ODS 형상, 시간 적분, 영상 프레임
+│   └── magnify.py     # 협대역 위상 증폭, 자동 ROI, fps 검출, α 선형성, 영상-센서 비교
 ├── recorder.py        # 스트림 레코더 (NPZ/CSV, 별도 writer 스레드)
 └── ui/
     ├── theme.py       # 다크 테마 (QSS + pyqtgraph)
@@ -242,6 +248,7 @@ vibrastudio/
     ├── views.py       # Time/Spectrum/Spectrogram/Octave/Envelope/FRF/Metrics
     ├── ods_view.py    # ODS 애니메이션 뷰
     ├── ods_video_dialog.py / ods_video_render.py  # 3D ODS 영상 내보내기 (4뷰, MP4)
+    ├── magnify_dialog.py / magnify_render.py       # 모션 증폭 vs 센서
     └── main_window.py # 엔진-분석기-뷰 배선, GUI 틱(60 ms)
 ```
 
@@ -266,4 +273,4 @@ Peak/RMS/PSD/dB 스케일과 윈도우 보정(S1/S2)을 적용하므로 단위�
 ## 요구 사항
 
 - Windows + NI-DAQmx 런타임 (하드웨어 사용 시)
-- Python 3.10+, PySide6, pyqtgraph, numpy, scipy, nidaqmx, matplotlib, imageio-ffmpeg (영상 내보내기)
+- Python 3.10+, PySide6, pyqtgraph, numpy, scipy, nidaqmx, matplotlib, imageio-ffmpeg (영상 내보내기), opencv-python-headless (모션 증폭)

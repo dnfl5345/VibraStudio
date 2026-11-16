@@ -118,6 +118,7 @@ class MainWindow(QMainWindow):
         self.view_impact.beam_preset_requested.connect(self.apply_beam_preset)
         self.view_ods.rig_requested.connect(self.open_rig_dialog)
         self.view_ods.video_requested.connect(self.open_ods_video)
+        self.view_ods.magnify_requested.connect(self.open_magnify)
         self.view_impact.mode_frequency_selected.connect(self._show_mode_in_ods)
         self.view_trigger.start_stream_requested.connect(self._start_for_trigger)
         self.view_trigger.open_recording_requested.connect(self._open_capture)
@@ -243,6 +244,11 @@ class MainWindow(QMainWindow):
         from .ods_video_dialog import OdsVideoDialog
         rec_dir = Path(self.recorder.out_dir) if hasattr(self, "recorder") else Path("recordings")
         dlg = OdsVideoDialog(self.rig, self.playback.path if self.playback else "", str(rec_dir), self)
+        dlg.exec()
+
+    def open_magnify(self) -> None:
+        from .magnify_dialog import MagnifyDialog
+        dlg = MagnifyDialog(self.rig, self.playback.path if self.playback else "", self)
         dlg.exec()
 
     def apply_rig(self, rig: Rig, remember: bool = True) -> None:

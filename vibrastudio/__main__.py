@@ -33,6 +33,11 @@ def _selftest() -> int:
     except Exception as exc:
         report["matplotlib"] = f"FAIL: {exc}"
     try:
+        import cv2
+        report["opencv"] = bool(cv2.__version__)
+    except Exception as exc:
+        report["opencv"] = f"FAIL: {exc}"
+    try:
         import imageio_ffmpeg
         report["ffmpeg"] = Path(imageio_ffmpeg.get_ffmpeg_exe()).exists()
     except Exception as exc:
@@ -194,7 +199,53 @@ def _ods_video(argv: list[str]) -> int:
     return 0
 
 
+def _magnify(argv: list[str]) -> int:
+    """Headless motion magnification vs sensors.
+
+    VibraStudio.exe --magnify --video V.mp4 --recording R.npz --rig RIG.json
+        [--fps F | --mains 60 [--fps-hint 250]] [--alphas 5,10,20 | auto] [--out DIR]
+    """
+    import argparse
+    from pathlib import Path
+
+    from .daq.playback import load_recording
+    from .dsp import magnify as mg
+    from .dsp import ods_video as ov
+    from .rig import Rig
+    from .ui.magnify_render import overlay_video, save_results, summary_figure
+    from .ui.ods_video_render import resolve_mapping
+
+    ap = argparse.ArgumentParser(prog="VibraStudio --magnify")
+    ap.add_argument("--video", required=True); ap.add_argument("--recording", required=True)
+    ap.add_argument("--rig", required=True)
+    ap.add_argument("--fps", type=float); ap.add_argument("--fps-hint", type=float)
+    ap.add_argument("--mains", type=float, default=60.0)
+    ap.add_argument("--alphas", default="auto"); ap.add_argument("--target-px", type=float, default=12.0)
+    ap.add_argument("--out")
+    a = ap.parse_args(argv)
+    out = Path(a.out or Path(a.video).with_name(Path(a.video).stem + "_magnify"))
+    out.mkdir(parents=True, exist_ok=True)
+    rec = load_recording(a.recording)
+    chans, geo, how = resolve_mapping(rec, Rig.load(a.rig), "rig")
+    model = ov.model_from(geo, chans, rec.data.shape[0])
+    acc = ov.node_acceleration(rec.data, model, base_follows=False)
+    print(f"sensor map: {how}")
+    alphas = None if a.alphas == "auto" else [float(v) for v in a.alphas.split(",")]
+    r = mg.run(a.video, model, acc, rec.fs, fps=a.fps, mains=a.mains, fps_hint=a.fps_hint,
+               alphas=alphas, target_px=a.target_px)
+    save_results(r, out, a.video, a.recording)
+    summary_figure(r, out, f"{Path(a.video).name}  vs  {Path(a.recording).name}")
+    overlay_video(r, out)
+    for row in r.per_sensor:
+        print("  ", row)
+    print(f"written to {out}")
+    return 0
+
+
 def main() -> int:
+    if "--magnify" in sys.argv:
+        i = sys.argv.index("--magnify")
+        return _magnify(sys.argv[i + 1:])
     if "--ods-video" in sys.argv:
         i = sys.argv.index("--ods-video")
         return _ods_video(sys.argv[i + 1:])
