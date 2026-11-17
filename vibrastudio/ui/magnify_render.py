@@ -97,7 +97,7 @@ def synthesis_video(r: MagnifyResult, out: Path, fps: float = 12.0, cycles: int 
     W, H = 1600, 896
     fig = Figure(figsize=(W / 100, H / 100), dpi=100, facecolor="white")
     FigureCanvasAgg(fig)
-    gs = fig.add_gridspec(1, 5, width_ratios=[0.55, 0.55, 0.55, 0.75, 1.0], left=0.02, right=0.98, top=0.84,
+    gs = fig.add_gridspec(1, 5, width_ratios=[0.55, 0.55, 0.55, 0.9, 1.0], left=0.02, right=0.98, top=0.84,
                           bottom=0.08, wspace=0.12)
     axs = [fig.add_subplot(gs[0, i]) for i in range(3)]
     a_tx = fig.add_subplot(gs[0, 3]); a_tx.axis("off")
@@ -137,7 +137,7 @@ def synthesis_video(r: MagnifyResult, out: Path, fps: float = 12.0, cycles: int 
             err = (f"left-out sensors {100 * ln.held_out_error:.0f} %" if np.isfinite(ln.held_out_error) else
                    f"leave-one-out {100 * ln.loo_error:.0f} %" if np.isfinite(ln.loo_error) else "not checked")
             ttl.set_text(f"{ln.name}    α = {ln.alpha:,.0f}")
-            mac = f"{ln.mac:.2f}" if np.isfinite(ln.mac) else "—  (needs 3 sensors)"
+            mac = f"{ln.mac:.2f}" if np.isfinite(ln.mac) else "— (under 3 sensors)"
             note = "\n\n" + "\n".join(textwrap.wrap("! " + ln.note, 34)) if ln.note else ""
             txt.set_text(f"sensor motion {ln.sensor_um:.2f} µm\nvideo signal/noise {ln.snr_video:.1f}\n\n"
                          f"video magnification check\n  measured / target  {ln.measured_ratio:.2f}\n"
