@@ -130,29 +130,53 @@ class NarrowbandMagnifier:
         self.phi: list[np.ndarray] = []
 
     def run(self, V: np.ndarray, fps: float, f0: float,
-            progress: Callable[[int, int], bool] | None = None) -> None:
+            progress: Callable[[int, int], bool] | None = None, extra=()) -> None:
+        """One pass over the video. ``extra``: more frequencies to keep phasors for (see ``frame``)."""
         T = len(V)
         win = np.hanning(T)
         t = np.arange(T) / fps
         e = np.exp(-2j * np.pi * f0 * t) * win
         en = np.exp(-2j * np.pi * f0 * 1.07 * t) * win          # off-frequency: noise floor
+        ex = [float(f) for f in extra]
+        nb, hw, C = len(self.bands), self.ref.size, 8
+        if ex:                                                   # chunks of frames, one matrix product each
+            E = np.exp(-2j * np.pi * np.outer(ex, t)) * win
+            Er, Ei = E.real.astype(np.float32), E.imag.astype(np.float32)
+            buf = np.zeros((nb, C, hw), np.float32)
+            xr = np.zeros((nb, len(ex), hw), np.float32)
+            xi = np.zeros((nb, len(ex), hw), np.float32)
         for i in range(T):
             F = np.fft.fft2(V[i].astype(np.float32))
             for b, H in enumerate(self.bands):
                 d = np.angle(np.fft.ifft2(F * H) * np.conj(self.Bref[b]))
                 self.acc[b] += d * e[i]
                 self.noise[b] += d * en[i]
+                if ex:
+                    buf[b, i % C] = d.ravel()
+            if ex and (i % C == C - 1 or i == T - 1):
+                n = i % C + 1
+                sl = slice(i - n + 1, i + 1)
+                for b in range(nb):
+                    xr[b] += Er[:, sl] @ buf[b, :n]
+                    xi[b] += Ei[:, sl] @ buf[b, :n]
             if progress and i % 20 == 0 and not progress(i, T):
                 raise InterruptedError("cancelled")
         wsum = win.sum()
         self.amp = [np.abs(B) for B in self.Bref]
-        self.phi = []
-        for b in range(len(self.bands)):                         # amplitude-weighted smoothing
+
+        def smooth(acc, b):                                      # amplitude-weighted smoothing
             wgt = self.amp[b] ** 2
-            a = self.acc[b] * wgt
+            a = acc * wgt
             s = self.smooth
             num = cv2.GaussianBlur(a.real, (0, 0), s) + 1j * cv2.GaussianBlur(a.imag, (0, 0), s)
-            self.phi.append(2 * num / (cv2.GaussianBlur(wgt, (0, 0), s) + 1e-9) / wsum)
+            return 2 * num / (cv2.GaussianBlur(wgt, (0, 0), s) + 1e-9) / wsum
+
+        self.phi = [smooth(self.acc[b], b) for b in range(nb)]
+        self.phi_x = {}
+        shape = self.ref.shape
+        for k, f in enumerate(ex):
+            self.phi_x[f] = [smooth((xr[b, k] + 1j * xi[b, k]).astype(np.complex128).reshape(shape), b)
+                             .astype(np.complex64) for b in range(nb)]
 
     def motion_map(self) -> np.ndarray:
         """Per-pixel signal/noise of the phase motion at f0."""
@@ -160,9 +184,10 @@ class NarrowbandMagnifier:
         n = sum(np.abs(a) * m ** 2 for a, m in zip(self.noise, self.amp))
         return s / (n + 1e-12)
 
-    def frame(self, alpha: float, theta: float) -> np.ndarray:
+    def frame(self, alpha: float, theta: float, f: float | None = None) -> np.ndarray:
+        """Reference frame with the motion at f0 (or at an ``extra`` frequency f) times alpha, at phase theta."""
         out = np.fft.ifft2(self.Fref * (self.hi ** 2 + self.lo ** 2)).real
-        for H, B, ph in zip(self.bands, self.Bref, self.phi):
+        for H, B, ph in zip(self.bands, self.Bref, self.phi if f is None else self.phi_x[float(f)]):
             Bm = B * np.exp(1j * alpha * np.real(ph * np.exp(1j * theta)))
             out += 2 * np.fft.ifft2(np.fft.fft2(Bm) * np.conj(H)).real
         return out
@@ -381,14 +406,19 @@ class MagnifyResult:
     frames: dict                     # alpha -> list of K frames (one cycle)
     base: np.ndarray
     thetas: np.ndarray
+    synth: list = field(default_factory=list)   # dsp.synth.Line per frequency (sensor-guided synthesis)
 
 
 def run(video: str, model, acc_nodes: np.ndarray, fs: float, *, fps: float | None = None,
         mains: float = 60.0, fps_hint: float | None = None, alphas=None, target_px: float = 12.0,
-        cycle_frames: int = 24, log: Callable[[str], None] = print,
+        cycle_frames: int = 24, synth=None, log: Callable[[str], None] = print,
         progress: Callable[[str, int, int], bool] | None = None) -> MagnifyResult:
-    """Whole pipeline. ``model``/``acc_nodes`` come from dsp.ods_video (rig-mapped recording)."""
+    """Whole pipeline. ``model``/``acc_nodes`` come from dsp.ods_video (rig-mapped recording).
+
+    ``synth``: dsp.synth.SynthOptions to add the per-frequency sensor-guided synthesis.
+    """
     from . import ods_video as ov
+    from . import synth as sy
     _need_cv2()
     prog = (lambda stage: (lambda i, n=0: progress(stage, i, n))) if progress else (lambda stage: None)
 
@@ -435,9 +465,13 @@ def run(video: str, model, acc_nodes: np.ndarray, fs: float, *, fps: float | Non
     log(f"frame rate {fps:.3f} fps; drive in video {f_vid:.3f} Hz (DAQ {f_drive:.3f} Hz)")
     P = phasor(tracks.transpose(0, 2, 1), fps, f_vid)
 
+    lines = []
+    if synth is not None:
+        lines = sy.plan(synth, ods, acc_nodes[sens][:, 1], fs, f_drive, fps, f_vid, T, mains)
+        log("synthesis lines: " + ", ".join(ln.name for ln in lines))
     mag = NarrowbandMagnifier(ref)
     log("magnifier: accumulating phase phasors ...")
-    mag.run(V, fps, f_vid, prog("magnify"))
+    mag.run(V, fps, f_vid, prog("magnify"), extra=[f for ln in lines for f in (ln.f_video, ln.f_control)])
     del V
 
     # sensors -> image plane (right = -Y, down = -Z), aligned by one complex gain
@@ -485,6 +519,10 @@ def run(video: str, model, acc_nodes: np.ndarray, fs: float, *, fps: float | Non
     ok = [al for al in alphas if np.all(np.abs(lin[al][big] - 1) < 0.2)]
     a_best = max(ok) if ok else a0
     log(f"recommended alpha {a_best:g}; magnifier gain {gain0:.2f}")
+    if lines:
+        lines = sy.build(lines, synth, a=acc_nodes[sens], fs=fs, s_h=s_h, labels=[model.labels[i] for i in sens],
+                         tracks=tracks, roi=roi, blocks=bl, idx=idx, fps=fps, px_mm=px_mm, gain=complex(g),
+                         mag=mag, mag_gain=gain0, base=base, f_vid=f_vid, log=log, progress=progress)
     return MagnifyResult(fps, fsnr, f_vid, f_drive, (x0, x1), beam_x, bl, px_mm, ref, mag.motion_map(), roi, P,
                          [r["sensor"] for r in rows], pred, complex(g), rows, list(alphas), lin, gain0, a_best,
-                         frames, base, thetas)
+                         frames, base, thetas, lines)

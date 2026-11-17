@@ -5,6 +5,11 @@ the rig maps the sensors into global axes. The run finds the frame rate,
 selects the sensor blocks and beam regions by itself, sweeps the
 amplification factor alpha and shows how far the magnified video agrees with
 the accelerometers. See vibrastudio.dsp.magnify.
+
+Optional: sensor-guided synthesis (vibrastudio.dsp.synth). For each frequency
+line the factor alpha is taken from the sensors, the video magnification is
+checked against them, and the still frame is warped by the shape the sensors
+give, so lines the camera cannot resolve are still shown.
 """
 
 from __future__ import annotations
@@ -15,13 +20,14 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 STAGES = {"read": "Reading video", "magnify": "Magnifying (phase phasors)", "alpha": "Alpha sweep",
-          "video": "Writing overlay video"}
+          "video": "Writing overlay video", "synth": "Sensor-guided synthesis",
+          "synth_video": "Writing synthesis video"}
 
 
 class _Worker(QThread):
@@ -44,7 +50,8 @@ class _Worker(QThread):
             from ..daq.playback import load_recording
             from ..dsp import magnify as mg
             from ..dsp import ods_video as ov
-            from .magnify_render import overlay_video, save_results, summary_figure
+            from .magnify_render import (overlay_video, save_results, summary_figure, synthesis_figure,
+                                         synthesis_video)
             from .ods_video_render import resolve_mapping
 
             rec = load_recording(self.recording)
@@ -58,6 +65,9 @@ class _Worker(QThread):
             save_results(r, out, self.video, self.recording)
             summary_figure(r, out, f"{Path(self.video).name}  vs  {Path(self.recording).name}")
             overlay_video(r, out, progress=lambda i, n: self._prog("video", i, n))
+            if r.synth:
+                synthesis_figure(r, out, f"{Path(self.video).name}  vs  {Path(self.recording).name}")
+                synthesis_video(r, out, progress=lambda i, n: self._prog("synth_video", i, n))
             self.done.emit(r, str(out))
         except InterruptedError:
             self.failed.emit("Cancelled.")
@@ -93,6 +103,21 @@ class MagnifyDialog(QDialog):
         self.target = QDoubleSpinBox(); self.target.setRange(1, 200); self.target.setValue(12)
         self.target.setSuffix(" px")
         self.target.setToolTip("auto alphas are centred where the largest block motion is drawn this big")
+        self.synth = QCheckBox("Sensor-guided synthesis per frequency")
+        self.synth.setToolTip("Alpha from the sensors for every line; the video magnification is checked against "
+                              "the sensors, and the still frame is warped by the sensor shape")
+        self.synth_freqs = QLineEdit("auto")
+        self.synth_freqs.setToolTip("auto (drive + strongest sensor lines), or Hz separated by commas, "
+                                    "e.g. 5, 18.9, 37.8. Lines above half the frame rate are allowed.")
+        self.synth_source = QComboBox()
+        self.synth_source.addItems(["Auto", "Sensors only", "Sensors + video (fusion)"])
+        self.synth_source.setToolTip("Auto: fusion when fewer than 4 sensors are used. The video is only used "
+                                     "at lines where it passes the check.")
+        self.synth_sensors = QLineEdit(); self.synth_sensors.setPlaceholderText("all sensors")
+        self.synth_sensors.setToolTip("Labels the shape may use, e.g. S1, S8. The others then test the result.")
+        self.synth_px = QDoubleSpinBox(); self.synth_px.setRange(1, 40); self.synth_px.setValue(10)
+        self.synth_px.setSuffix(" px")
+        self.synth_px.setToolTip("Every line is drawn with this much motion at its largest sensor")
         self.out = QLineEdit()
         bo = QPushButton("…"); bo.clicked.connect(self._browse_out)
 
@@ -106,6 +131,11 @@ class MagnifyDialog(QDialog):
         f.addRow("Frame rate", r2)
         r3 = QHBoxLayout(); r3.addWidget(self.alphas, 1); r3.addWidget(QLabel("auto target")); r3.addWidget(self.target)
         f.addRow("Alpha", r3)
+        r5 = QHBoxLayout(); r5.addWidget(self.synth)
+        for lab, w, st in (("lines", self.synth_freqs, 2), ("shape from", self.synth_source, 0),
+                           ("sensors", self.synth_sensors, 1), ("draw", self.synth_px, 0)):
+            r5.addWidget(QLabel(lab)); r5.addWidget(w, st)
+        f.addRow("Synthesis", r5)
         r4 = QHBoxLayout(); r4.addWidget(self.out, 1); r4.addWidget(bo)
         f.addRow("Output folder", r4)
         note = QLabel("Video and recording must show the same steady sine drive. Camera and DAQ are not "
@@ -130,28 +160,36 @@ class MagnifyDialog(QDialog):
         self.bar = QProgressBar(); self.stage = QLabel("")
         self.btn_run = QPushButton("Run"); self.btn_run.setDefault(True)
         self.btn_video = QPushButton("Open video"); self.btn_folder = QPushButton("Open folder")
+        self.btn_synth = QPushButton("Open synthesis")
         self.btn_close = QPushButton("Close")
-        for b in (self.btn_video, self.btn_folder):
+        for b in (self.btn_video, self.btn_synth, self.btn_folder):
             b.setEnabled(False)
+        self.btn_synth.clicked.connect(lambda: self._open(Path(self.out_dir) / "synthesis_vs_video.mp4"))
         self.btn_run.clicked.connect(self._run)
         self.btn_video.clicked.connect(lambda: self._open(Path(self.out_dir) / "magnify_vs_sensors.mp4"))
         self.btn_folder.clicked.connect(lambda: self._open(Path(self.out_dir)))
         self.btn_close.clicked.connect(self.close)
         acts = QHBoxLayout()
         acts.addWidget(self.stage); acts.addWidget(self.bar, 1)
-        for b in (self.btn_run, self.btn_video, self.btn_folder, self.btn_close):
+        for b in (self.btn_run, self.btn_video, self.btn_synth, self.btn_folder, self.btn_close):
             acts.addWidget(b)
 
         lay = QVBoxLayout(self)
         lay.addWidget(g); lay.addWidget(split, 1); lay.addLayout(acts)
         self.fps_mode.currentIndexChanged.connect(self._fps_mode)
         self.video.editingFinished.connect(self._suggest_out)
+        self.synth.toggled.connect(self._synth_mode)
         self._fps_mode(0)
+        self._synth_mode(False)
 
     # -- inputs ------------------------------------------------------------
     def _fps_mode(self, i: int) -> None:
         self.fps.setEnabled(i == 2)
         self.fps_hint.setEnabled(i != 2)
+
+    def _synth_mode(self, on: bool) -> None:
+        for w in (self.synth_freqs, self.synth_source, self.synth_sensors, self.synth_px):
+            w.setEnabled(on)
 
     def _browse_video(self) -> None:
         p, _ = QFileDialog.getOpenFileName(self, "Camera video", "", "Video (*.mp4 *.avi *.mov *.mkv);;All (*)")
@@ -184,6 +222,14 @@ class MagnifyDialog(QDialog):
         t = self.alphas.text().strip().lower()
         if t and t != "auto":
             o["alphas"] = [float(v) for v in t.replace(";", ",").split(",") if v.strip()]
+        if self.synth.isChecked():
+            from ..dsp.synth import SynthOptions
+            t = self.synth_freqs.text().strip().lower()
+            freqs = None if t in ("", "auto") else [float(v) for v in t.replace(";", ",").split(",") if v.strip()]
+            use = [v.strip() for v in self.synth_sensors.text().replace(";", ",").split(",") if v.strip()]
+            o["synth"] = SynthOptions(freqs=freqs, target_px=self.synth_px.value(),
+                                      source=("auto", "sensors", "fusion")[self.synth_source.currentIndex()],
+                                      use_sensors=use or None)
         return o
 
     # -- run -------------------------------------------------------------
@@ -203,7 +249,8 @@ class MagnifyDialog(QDialog):
         try:
             opts = self._opts()
         except ValueError:
-            QMessageBox.warning(self, "Magnification", "Alpha: 'auto' or numbers separated by commas.")
+            QMessageBox.warning(self, "Magnification",
+                                "Alpha and synthesis lines: 'auto' or numbers separated by commas.")
             return
         self._suggest_out()
         self.logbox.clear(); self.table.setRowCount(0)
@@ -232,13 +279,18 @@ class MagnifyDialog(QDialog):
         self.out_dir = out
         self.stage.setText(f"Done: recommended α = {r.alpha_recommended:g}")
         self.btn_video.setEnabled(True); self.btn_folder.setEnabled(True)
+        self.btn_synth.setEnabled(bool(r.synth))
         self.table.setRowCount(len(r.per_sensor))
         for i, row in enumerate(r.per_sensor):
             vals = [row["sensor"], f"{row['height_cm']:g}", f"{row['sensor_um']:.1f}", f"{row['video_um']:.1f}",
                     "—" if row["small"] else f"{row['ratio']:.2f}", "—" if row["small"] else f"{row['phase_deg']:+.1f}"]
             for j, v in enumerate(vals):
                 self.table.setItem(i, j, QTableWidgetItem(v))
-        pm = QPixmap(str(Path(out) / "magnify_summary.png"))
+        for ln in r.synth:
+            self.logbox.appendPlainText(
+                f"{ln.name}: α {ln.alpha:,.0f}, video magnification {'valid' if ln.valid else 'NOT valid'}, "
+                f"synthesis from {ln.source}")
+        pm = QPixmap(str(Path(out) / ("synthesis_shapes.png" if r.synth else "magnify_summary.png")))
         self.image.setPixmap(pm.scaled(self.image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.logbox.appendPlainText(f"written to {out}")
 

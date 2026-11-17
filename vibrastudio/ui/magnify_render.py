@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import textwrap
 from pathlib import Path
 from typing import Callable
 
@@ -22,8 +23,143 @@ def save_results(r: MagnifyResult, out: Path, video: str, recording: str) -> Pat
              per_sensor=r.per_sensor, alphas=r.alphas, alpha_recommended=r.alpha_recommended,
              magnifier_gain=r.mag_gain,
              linearity={f"{a:g}": [round(float(x), 3) for x in v] for a, v in r.linearity.items()})
+    if r.synth:
+        d["synthesis"] = [synth_row(ln) for ln in r.synth]
     p = out / "magnify_results.json"
     p.write_text(json.dumps(d, indent=1, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def _num(v: float, nd: int = 3):
+    return None if not np.isfinite(v) else round(float(v), nd)
+
+
+def synth_row(ln) -> dict:
+    return dict(line=ln.name, f_hz=_num(ln.f, 4), f_video_hz=_num(ln.f_video, 4), folded=ln.folded,
+                harmonic=ln.harmonic, sensor_um=_num(ln.sensor_um), alpha=_num(ln.alpha, 1),
+                video_snr=_num(ln.snr_video, 1), measured_over_target=_num(ln.measured_ratio),
+                shape_match=_num(ln.mac), noise_only=_num(ln.noise_only),
+                video_magnification_valid=ln.valid, synthesis_from=ln.source, bending_shapes=ln.n_modes,
+                sensors_used=ln.sensors_used, leave_one_out_error=_num(ln.loo_error),
+                held_out_error=_num(ln.held_out_error), synthesis_drawn_px=_num(ln.synth_px, 2), note=ln.note)
+
+
+def _profile(ln, z: np.ndarray):
+    """Fitted shape, sensors and video points turned so the largest sensor is real (um)."""
+    rot = np.exp(-1j * np.angle(ln.y_s[np.argmax(np.abs(ln.y_s))]))
+    return (ln.fit(z) * rot).real, (ln.y_s * rot).real, (ln.y_v * rot).real
+
+
+def synthesis_figure(r: MagnifyResult, out: Path, title: str = "") -> Path:
+    """Per line: the shape the synthesis draws, the sensors and the video points it was fitted to."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    n = len(r.synth)
+    fig = Figure(figsize=(3.6 * n + 0.6, 6.4), dpi=110, facecolor="white")
+    FigureCanvasAgg(fig)
+    fig.suptitle(title or "Sensor-guided synthesis: shape per frequency", fontsize=14, weight="bold")
+    for i, ln in enumerate(r.synth):
+        ax = fig.add_subplot(1, n, i + 1)
+        z = np.linspace(0, ln.fit.length_cm, 120)
+        curve, ys, yv = _profile(ln, z)
+        used = np.array([lab in ln.sensors_used for lab in ln.labels])
+        ax.plot(yv, ln.z_v, ".", color=CYAN, alpha=0.9 if ln.valid else 0.35,
+                label="video" + ("" if ln.valid else " (failed the check)"))
+        ax.plot(curve, z, "-", color="k", lw=1.6, label=f"model ({ln.source}, {ln.n_modes} bending)")
+        ax.plot(ys[used], ln.z_s[used], "o", color=RED, ms=7, label="sensors used")
+        if (~used).any():
+            ax.plot(ys[~used], ln.z_s[~used], "o", mfc="none", mec=RED, ms=7, label="sensors left out")
+        span = 1.5 * max(np.abs(ys).max(), np.abs(curve).max())
+        ax.set_xlim(-span, span); ax.axvline(0, color="k", lw=0.6); ax.grid(alpha=0.3)
+        err = (f"left-out sensors {100 * ln.held_out_error:.0f} %" if np.isfinite(ln.held_out_error) else
+               f"leave-one-out {100 * ln.loo_error:.0f} %" if np.isfinite(ln.loo_error) else "")
+        ax.set_title(f"{ln.name}\nα = {ln.alpha:,.0f} · video {'valid' if ln.valid else 'not valid'}\n"
+                     + ("straight line only: not reliable" if ln.note else err), fontsize=10,
+                     color="#b71c1c" if ln.note else "k")
+        ax.set_xlabel("horizontal motion (µm)")
+        if i == 0:
+            ax.set_ylabel("height (cm)")
+        ax.legend(fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.11), ncol=2, frameon=False)
+    fig.tight_layout(rect=(0, 0.02, 1, 0.94))
+    p = out / "synthesis_shapes.png"
+    fig.savefig(p)
+    return p
+
+
+def synthesis_video(r: MagnifyResult, out: Path, fps: float = 12.0, cycles: int = 3,
+                    progress: Callable[[int, int], bool] | None = None) -> Path:
+    """Per line: original | video magnification | sensor-guided synthesis, same alpha, one cycle looped."""
+    import imageio_ffmpeg
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    W, H = 1600, 896
+    fig = Figure(figsize=(W / 100, H / 100), dpi=100, facecolor="white")
+    FigureCanvasAgg(fig)
+    gs = fig.add_gridspec(1, 5, width_ratios=[0.55, 0.55, 0.55, 0.75, 1.0], left=0.02, right=0.98, top=0.84,
+                          bottom=0.08, wspace=0.12)
+    axs = [fig.add_subplot(gs[0, i]) for i in range(3)]
+    a_tx = fig.add_subplot(gs[0, 3]); a_tx.axis("off")
+    a_pl = fig.add_subplot(gs[0, 4])
+    for a, t in zip(axs, ("original", "video magnification", "sensor-guided synthesis")):
+        a.set_title(t, fontsize=13); a.axis("off")
+    ref8 = np.clip(r.base, 0, 255)
+    axs[0].imshow(ref8, cmap="gray", vmin=0, vmax=255)
+    im1 = axs[1].imshow(ref8, cmap="gray", vmin=0, vmax=255)
+    im2 = axs[2].imshow(ref8, cmap="gray", vmin=0, vmax=255)
+    ttl = fig.text(0.02, 0.93, "", fontsize=19, weight="bold")
+    txt = a_tx.text(0.0, 0.5, "", fontsize=12, va="center", transform=a_tx.transAxes)
+    curve, = a_pl.plot([], [], "-", color="k", lw=1.8, label="synthesis (model × α)")
+    pts, = a_pl.plot([], [], "o", color=RED, ms=8, label="sensors used × α")
+    pts_out, = a_pl.plot([], [], "o", mfc="none", mec=RED, ms=8, label="sensors left out × α")
+    a_pl.axvline(0, color="k", lw=0.6); a_pl.grid(alpha=0.3); a_pl.legend(loc="lower right", fontsize=9)
+    a_pl.set_xlabel("drawn horizontal motion (px)"); a_pl.set_ylabel("height (cm)")
+    p = out / "synthesis_vs_video.mp4"
+    w = imageio_ffmpeg.write_frames(str(p), (W, H), fps=fps, codec="libx264", quality=None,
+                                    output_params=["-crf", "20", "-movflags", "+faststart"],
+                                    pix_fmt_out="yuv420p", macro_block_size=8)
+    w.send(None)
+    total = sum(cycles * len(ln.frames_synth) for ln in r.synth)
+    n = 0
+    try:
+        for ln in r.synth:
+            K = len(ln.frames_synth)
+            thetas = 2 * np.pi * np.arange(K) / K
+            z = np.linspace(0, ln.fit.length_cm, 100)
+            sc = ln.alpha * ln.gain * r.px_per_mm / 1e3                  # um -> drawn px, in step with the frames
+            cz, cs = ln.fit(z) * sc, ln.y_s * sc
+            if ln.folded:
+                cz, cs = np.conj(cz), np.conj(cs)
+            used = np.array([lab in ln.sensors_used for lab in ln.labels])
+            span = 1.5 * max(np.abs(cs).max(), np.abs(cz).max(), 1.0)
+            a_pl.set_xlim(-span, span); a_pl.set_ylim(-2, ln.fit.length_cm + 2)
+            err = (f"left-out sensors {100 * ln.held_out_error:.0f} %" if np.isfinite(ln.held_out_error) else
+                   f"leave-one-out {100 * ln.loo_error:.0f} %" if np.isfinite(ln.loo_error) else "not checked")
+            ttl.set_text(f"{ln.name}    α = {ln.alpha:,.0f}")
+            mac = f"{ln.mac:.2f}" if np.isfinite(ln.mac) else "—  (needs 3 sensors)"
+            note = "\n\n" + "\n".join(textwrap.wrap("! " + ln.note, 34)) if ln.note else ""
+            txt.set_text(f"sensor motion {ln.sensor_um:.2f} µm\nvideo signal/noise {ln.snr_video:.1f}\n\n"
+                         f"video magnification check\n  measured / target  {ln.measured_ratio:.2f}\n"
+                         f"  shape match  {mac}\n  noise only  {ln.noise_only:.2f}\n"
+                         f"  → {'valid' if ln.valid else 'NOT valid' if ln.note else 'NOT valid: use the synthesis'}\n\n"
+                         f"synthesis\n  from {ln.source}: {', '.join(ln.sensors_used)}\n"
+                         f"  {ln.n_modes} bending shapes + rigid\n  model error: {err}"
+                         + note)
+            for _ in range(cycles):
+                for k, th in enumerate(thetas):
+                    im1.set_data(ln.frames_video[k]); im2.set_data(ln.frames_synth[k])
+                    e = np.exp(1j * th)
+                    curve.set_data((cz * e).real, z)
+                    pts.set_data((cs[used] * e).real, ln.z_s[used])
+                    pts_out.set_data((cs[~used] * e).real, ln.z_s[~used])
+                    fig.canvas.draw()
+                    w.send(np.ascontiguousarray(np.asarray(fig.canvas.buffer_rgba())[..., :3]))
+                    n += 1
+                    if progress and not progress(n, total):
+                        raise InterruptedError("cancelled")
+    finally:
+        w.close()
     return p
 
 

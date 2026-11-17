@@ -37,6 +37,12 @@ Python(PySide6 + pyqtgraph)으로 구현했습니다.
   - 협대역 위상 증폭(복소 조향 피라미드 5단, 프레임 단위 위상자 누적이라 영상 길이와 무관한 메모리), α 스윕 → 증폭 영상의 실제 이동을 광류로 재측정해 선형성 판정, **권장 α = 선형을 유지하는 최대값**
   - 센서별 비교(화면 오른쪽 = −Y, 위 = +Z; 카메라–DAQ 시간 지연은 복소 이득 1개로 정렬): 진폭비·위상차 표, 요약 그림, 증폭 영상 위에 "가속도계 형상 × α" 위치를 겹친 MP4
   - 명령줄: `VibraStudio.exe --magnify --video V.mp4 --recording R.npz --rig rigs\cantilever_8triax.json --mains 60`
+  - **센서 기반 합성 (대화상자의 `Sensor-guided synthesis per frequency`)**: 주파수마다 α = 목표 이동량 ÷ 센서 변위로 정해 `원본 | 영상 증폭 | 센서 기반 합성`을 나란히 만든다
+    - 영상 증폭 판정: 증폭 영상의 블록 이동을 다시 재서 센서와 비교(크기 0.8–1.25, 형상 일치 > 0.9)하고, 같은 α를 1.5 Hz 옆에 걸어 잡음만으로 생기는 움직임이 목표의 10 % 미만인지 확인
+    - 합성: 형상 u(z) = 평행 이동 + 회전 + 한쪽 고정 보의 굽힘 형상 m개. 계수는 가중 최소제곱, m은 교차검증으로 선택. 정지 프레임을 α·u(z)만큼 변형
+    - 센서 + 영상 퓨전(`Sensors + video`, 센서를 4개 미만으로 지정하면 자동): 판정을 통과한 주파수에서만 영상 추적점을 같이 맞춘다. 카메라–DAQ 이득과 카메라 흔들림도 함께 푼다. 지정하지 않은 센서는 결과 검증에 쓴다
+    - 카메라 나이퀴스트 위 주파수도 지정 가능(접힌 주파수에서 읽음). 결과: `synthesis_vs_video.mp4`, `synthesis_shapes.png`, JSON의 `synthesis`
+    - 명령줄: 위 명령에 `--synth [--synth-freqs 5,18.9,37.8] [--synth-sensors S2,S8] [--synth-source auto|sensors|fusion]`
 - **재생 시 리그 재적용**: 리그가 적용된 상태에서 다른 센서 맵으로 녹화된 파일을 열면, 물리 채널 기준으로 리그를 적용할지 물음
 - **오프라인 섀시 처리**: 등록돼 있지만 응답하지 않는 섀시(분리된 섀시)는 연결 시 자동 제외되고, 옛 설정에 남은 채널은 시작 시 확인 후 제외
 - **헤드리스 수집 테스트**: `VibraStudio.exe --livecheck 30` → exe 옆 `livecheck.txt/json` (소스 실행 시 `outputs/`)
@@ -240,7 +246,9 @@ vibrastudio/
 │   └── analysis.py    # StreamingAnalyzer: 평균화 자기/크로스 스펙트럼,
 │                      #  PSD, 적분, FRF/Coherence, ODS, 옥타브, 포락선, 메트릭
 │   ├── ods_video.py   # 노드 3D 운동 복원, 스펙트럴 ODS 형상, 시간 적분, 영상 프레임
-│   └── magnify.py     # 협대역 위상 증폭, 자동 ROI, fps 검출, α 선형성, 영상-센서 비교
+│   ├── magnify.py     # 협대역 위상 증폭, 자동 ROI, fps 검출, α 선형성, 영상-센서 비교
+│   ├── fusion.py      # 형상 모델(강체 + 보 굽힘), 센서/영상 가중 최소제곱, 모드 수 교차검증
+│   └── synth.py       # 주파수별 α, 영상 증폭 판정, 센서 기반 합성 프레임
 ├── recorder.py        # 스트림 레코더 (NPZ/CSV, 별도 writer 스레드)
 └── ui/
     ├── theme.py       # 다크 테마 (QSS + pyqtgraph)

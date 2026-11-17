@@ -204,6 +204,8 @@ def _magnify(argv: list[str]) -> int:
 
     VibraStudio.exe --magnify --video V.mp4 --recording R.npz --rig RIG.json
         [--fps F | --mains 60 [--fps-hint 250]] [--alphas 5,10,20 | auto] [--out DIR]
+        [--synth [--synth-freqs 5,18.9,37.8 | auto] [--synth-source auto|sensors|fusion]
+                 [--synth-sensors S1,S8] [--synth-target-px 10] [--beam-length-cm 50]]
     """
     import argparse
     from pathlib import Path
@@ -212,10 +214,17 @@ def _magnify(argv: list[str]) -> int:
     from .dsp import magnify as mg
     from .dsp import ods_video as ov
     from .rig import Rig
-    from .ui.magnify_render import overlay_video, save_results, summary_figure
+    from .dsp.synth import SynthOptions
+    from .ui.magnify_render import overlay_video, save_results, summary_figure, synthesis_figure, synthesis_video
     from .ui.ods_video_render import resolve_mapping
 
     ap = argparse.ArgumentParser(prog="VibraStudio --magnify")
+    ap.add_argument("--synth", action="store_true", help="add the per-frequency sensor-guided synthesis")
+    ap.add_argument("--synth-freqs", default="auto", help="auto, or Hz separated by commas")
+    ap.add_argument("--synth-source", default="auto", choices=["auto", "sensors", "fusion"])
+    ap.add_argument("--synth-sensors", default="", help="labels the shape may use, e.g. S1,S8 (default: all)")
+    ap.add_argument("--synth-target-px", type=float, default=10.0)
+    ap.add_argument("--beam-length-cm", type=float)
     ap.add_argument("--video", required=True); ap.add_argument("--recording", required=True)
     ap.add_argument("--rig", required=True)
     ap.add_argument("--fps", type=float); ap.add_argument("--fps-hint", type=float)
@@ -231,11 +240,21 @@ def _magnify(argv: list[str]) -> int:
     acc = ov.node_acceleration(rec.data, model, base_follows=False)
     print(f"sensor map: {how}")
     alphas = None if a.alphas == "auto" else [float(v) for v in a.alphas.split(",")]
+    synth = None
+    if a.synth:
+        synth = SynthOptions(
+            freqs=None if a.synth_freqs == "auto" else [float(v) for v in a.synth_freqs.split(",")],
+            target_px=a.synth_target_px, source=a.synth_source,
+            use_sensors=[v.strip() for v in a.synth_sensors.split(",") if v.strip()] or None,
+            length_cm=a.beam_length_cm)
     r = mg.run(a.video, model, acc, rec.fs, fps=a.fps, mains=a.mains, fps_hint=a.fps_hint,
-               alphas=alphas, target_px=a.target_px)
+               alphas=alphas, target_px=a.target_px, synth=synth)
     save_results(r, out, a.video, a.recording)
     summary_figure(r, out, f"{Path(a.video).name}  vs  {Path(a.recording).name}")
     overlay_video(r, out)
+    if r.synth:
+        synthesis_figure(r, out, f"{Path(a.video).name}  vs  {Path(a.recording).name}")
+        synthesis_video(r, out)
     for row in r.per_sensor:
         print("  ", row)
     print(f"written to {out}")
