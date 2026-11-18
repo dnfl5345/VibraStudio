@@ -261,6 +261,86 @@ def _magnify(argv: list[str]) -> int:
     return 0
 
 
+def _rigcheck() -> int:
+    """Headless: start the main window as at launch and report whether the remembered rig is in use.
+
+    VibraStudio.exe --rigcheck   ->  rigcheck.json next to the program
+    No hardware is touched: the DAQ scan is replaced by a made-up result with the rig's own inputs.
+    """
+    import json
+    import os
+    import traceback
+    from pathlib import Path
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from . import __version__
+
+    out: dict = {"version": __version__, "frozen": bool(getattr(sys, "frozen", False))}
+    try:
+        from PySide6.QtCore import QSettings
+        from PySide6.QtWidgets import QApplication
+
+        from .config import AppConfig
+        from .daq.engine import ConnectResult
+        from .rig import Rig
+        from .ui import main_window as mw
+
+        app = QApplication(sys.argv)  # noqa: F841 - must exist
+        path = QSettings("VibraStudio", "VibraStudio").value("last_rig", "")
+        out["last_rig"], out["last_rig_exists"] = str(path), bool(path) and Path(str(path)).exists()
+        errors: list[str] = []
+        skip = {"n": 0}
+
+        def restore(self) -> None:                       # same as MainWindow._restore_rig, but keeps the traceback
+            if skip["n"]:                                # pretend the restore at start did not happen
+                skip["n"] -= 1
+                return
+            if path and Path(str(path)).exists():
+                try:
+                    self.apply_rig(Rig.load(str(path)), remember=False)
+                except Exception:  # noqa: BLE001
+                    errors.append(traceback.format_exc())
+
+        mw.MainWindow._restore_rig = restore
+        mw.MainWindow.detect_hardware = lambda self, auto=False: None
+        w = mw.MainWindow(AppConfig())
+        v = w.view_impact
+        out["after_start"] = dict(rig=w.rig.name if w.rig else None, channels=len(w.cfg.channels),
+                                  impact_tab=v.rig_label.text(), status=w.statusBar().currentMessage())
+        if w.rig is not None:
+            det = [f"{s.module}/ai{a}" for s in w.rig.sensors for a in sorted(s.ai.values())]
+            pat = str(w.rig.hammer.get("channel", ""))
+            if "*" in pat:
+                det += [pat.replace("*", "5").rsplit("/", 1)[0] + f"/ai{a}" for a in range(3)]
+            try:
+                w._on_connect_finished(ConnectResult(ok=True, channels=det), True)
+            except Exception:  # noqa: BLE001
+                errors.append(traceback.format_exc())
+            out["after_connect"] = dict(rig=w.rig.name if w.rig else None, channels=len(w.cfg.channels),
+                                        first_labels=[c.label for c in w.cfg.channels[:3]],
+                                        last_labels=[c.label for c in w.cfg.channels[-3:]],
+                                        hammer=v.hammer_box.currentText(), hammer_mv_n=v.hammer_sens.value(),
+                                        impact_tab=v.rig_label.text())
+            # the case seen on the rig PC: no rig after start, then the DAQ connects
+            skip["n"] = 1
+            w2 = mw.MainWindow(AppConfig())
+            before = w2.rig.name if w2.rig else None
+            w2._on_connect_finished(ConnectResult(ok=True, channels=det), True)
+            out["rig_missing_at_start"] = dict(rig_before_connect=before, rig_after_connect=w2.rig.name if w2.rig else None,
+                                               hammer=w2.view_impact.hammer_box.currentText(),
+                                               impact_tab=w2.view_impact.rig_label.text())
+        out["errors"] = errors
+        out["ok"] = bool(w.rig is not None and not errors and v.rig_active()
+                         and out.get("rig_missing_at_start", {}).get("rig_after_connect"))
+    except Exception:  # noqa: BLE001
+        out["crash"] = traceback.format_exc()
+        out["ok"] = False
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path.cwd()
+    (base / "rigcheck.json").write_text(json.dumps(out, indent=1, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(out, indent=1, ensure_ascii=False))
+    return 0 if out.get("ok") else 1
+
+
 def main() -> int:
     if "--magnify" in sys.argv:
         i = sys.argv.index("--magnify")
@@ -270,6 +350,8 @@ def main() -> int:
         return _ods_video(sys.argv[i + 1:])
     if "--selftest" in sys.argv:
         return _selftest()
+    if "--rigcheck" in sys.argv:
+        return _rigcheck()
     if "--livecheck" in sys.argv:
         i = sys.argv.index("--livecheck")
         try:

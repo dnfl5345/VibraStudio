@@ -24,6 +24,7 @@ from ..daq.playback import PlaybackBackend, RecordingData, load_recording
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
+from ..applog import log
 from ..rig import HAMMER_LABEL, Rig
 from .health_view import HealthView
 from .rig_dialog import RigDialog
@@ -205,10 +206,16 @@ class MainWindow(QMainWindow):
         # Success: map channels and switch to hardware source (idle only).
         if self.engine is None or not self.engine.running:
             self._detected = list(res.channels)
+            if self.rig is None:                 # the remembered rig did not come up at start: try again now
+                self._restore_rig()
             self.cfg.channels = (self.rig.to_channels(res.channels) if self.rig
                                  else channels_from_detected(res.channels))
             self.sidebar.channel_table.load(self.cfg.channels)
             self.sidebar.source_box.setCurrentIndex(0)
+            self.refresh_channel_dependent_ui()
+            log(f"DAQ connected: {len(res.channels)} inputs; rig {self.rig.name if self.rig else 'NONE'}; "
+                f"first channels {[c.label for c in self.cfg.channels[:3]]}; "
+                f"impact hammer {self.view_impact.hammer_box.currentText()}")
         self.sidebar.set_device_info(res.summary(), connected=True)
         note = " · chassis reserved" if res.reserved else ""
         if res.added:
@@ -218,17 +225,27 @@ class MainWindow(QMainWindow):
             f"{len(res.channels)} AI channels mapped{note}")
 
     def load_default_channels(self) -> None:
+        log("Default 18ch pressed: channel table replaced by the default template")
         self.cfg.channels = default_channel_template()
         self.sidebar.channel_table.load(self.cfg.channels)
 
     # -- sensor setup ---------------------------------------------------------
+    def _remembered_rig(self) -> str:
+        path = str(QSettings("VibraStudio", "VibraStudio").value("last_rig", "") or "")
+        return path if path and Path(path).exists() else ""
+
     def _restore_rig(self) -> None:
-        path = QSettings("VibraStudio", "VibraStudio").value("last_rig", "")
-        if path and Path(path).exists():
-            try:
-                self.apply_rig(Rig.load(path), remember=False)
-            except Exception as exc:
-                self.statusBar().showMessage(f"Could not load the last rig: {exc}")
+        raw = QSettings("VibraStudio", "VibraStudio").value("last_rig", "")
+        path = self._remembered_rig()
+        if not path:
+            log(f"no rig to restore (remembered: {raw!r})")
+            return
+        try:
+            self.apply_rig(Rig.load(path), remember=False)
+        except Exception as exc:
+            import traceback
+            log(f"rig restore FAILED for {path}:\n{traceback.format_exc()}")
+            self.statusBar().showMessage(f"Could not load the last rig: {exc}")
 
     def open_rig_dialog(self) -> None:
         if self.engine is not None and self.engine.running:
@@ -236,7 +253,13 @@ class MainWindow(QMainWindow):
                                     "Stop streaming first: this changes the channel list.")
             return
         modules = list(dict.fromkeys(p.rsplit("/", 1)[0] for p in self._detected))
-        dlg = RigDialog(self.rig, modules, self)
+        rig = self.rig
+        if rig is None and self._remembered_rig():       # nothing applied: open with the last rig, ready to Apply
+            try:
+                rig = Rig.load(self._remembered_rig())
+            except Exception as exc:  # noqa: BLE001
+                log(f"could not preload the remembered rig: {exc}")
+        dlg = RigDialog(rig, modules, self)
         if dlg.exec() == RigDialog.Accepted:
             self.apply_rig(dlg.result_rig)
 
@@ -275,6 +298,8 @@ class MainWindow(QMainWindow):
             QSettings("VibraStudio", "VibraStudio").setValue("last_rig", rig.path)
         self.statusBar().showMessage(
             f"Rig applied: {rig.name}, {len(rig.sensors)} sensors")
+        log(f"rig applied: {rig.name} ({len(rig.sensors)} sensors, {len(self.cfg.channels)} channels, "
+            f"file {rig.path or 'not saved'})")
 
     def _on_channels_mapped(self, mapped: list) -> None:
         """ODS auto-map rewrote node/direction/labels — sync the table.
@@ -290,6 +315,7 @@ class MainWindow(QMainWindow):
                 ch.sign, ch.axis_vec, ch.sensor_axis = m.sign, m.axis_vec, m.sensor_axis
         self.sidebar.channel_table.load(self.cfg.channels)
         # A manual map replaces the rig; do not bring it back on the next connect.
+        log(f"Auto-map Channels pressed: rig {self.rig.name if self.rig else 'none'} dropped and forgotten")
         self.rig = None
         QSettings("VibraStudio", "VibraStudio").remove("last_rig")
         self.view_impact.set_rig(None)

@@ -191,7 +191,8 @@ class ImpactView(BaseView):
             self.rig_label.setText(f"Rig: {self.rig_name} · {n} sensors")
             self.rig_label.setStyleSheet(f"color: {theme.TEXT_MUTED}")
         else:
-            self.rig_label.setText("No rig applied — sensor positions unknown")
+            self.rig_label.setText("No rig applied")
+            self.rig_label.setToolTip("Sensor positions and axes are unknown: press Sensor Setup…, then Apply")
             self.rig_label.setStyleSheet(f"color: {theme.RED}")
 
     def set_hammer(self, label: str, sens_mv_n: float | None = None) -> None:

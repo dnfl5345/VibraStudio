@@ -5,6 +5,6 @@ spectrogram, FRF/coherence, envelope analysis and ODS (Operational
 Deflection Shape) animation, styled with a commercial-grade dark UI.
 """
 
-__version__ = "1.9.1"
+__version__ = "1.9.2"
 __app_name__ = "VibraStudio"
 
