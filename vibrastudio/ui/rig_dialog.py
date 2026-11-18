@@ -224,7 +224,8 @@ class RigDialog(QDialog):
                           "position_cm": [low.position_cm[0], low.position_cm[1], z]})
             edges.insert(0, ["Clamp", low.name])
         rig = Rig(name=self.rig.name, description=self.rig.description, sensors=sensors,
-                  extra_nodes=extra, edges=edges, reference=self.rig.reference)
+                  extra_nodes=extra, edges=edges, reference=self.rig.reference,
+                  hammer=dict(self.rig.hammer))
         rig.validate()
         return rig
 

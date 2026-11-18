@@ -24,7 +24,7 @@ from ..daq.playback import PlaybackBackend, RecordingData, load_recording
 from ..dsp.analysis import StreamingAnalyzer
 from ..recorder import StreamRecorder
 from . import theme
-from ..rig import Rig
+from ..rig import HAMMER_LABEL, Rig
 from .health_view import HealthView
 from .rig_dialog import RigDialog
 from .trigger_view import TriggerView
@@ -115,7 +115,7 @@ class MainWindow(QMainWindow):
         self.sidebar.open_file_requested.connect(self.open_recording)
         self.sidebar.source_box.currentIndexChanged.connect(self._on_source_changed)
         self.view_ods.channels_mapped.connect(self._on_channels_mapped)
-        self.view_impact.beam_preset_requested.connect(self.apply_beam_preset)
+        self.view_impact.rig_setup_requested.connect(self.open_rig_dialog)
         self.view_ods.rig_requested.connect(self.open_rig_dialog)
         self.view_ods.video_requested.connect(self.open_ods_video)
         self.view_ods.magnify_requested.connect(self.open_magnify)
@@ -267,7 +267,10 @@ class MainWindow(QMainWindow):
             tip = max(s.position_cm[2] for s in rig.sensors)
             self.view_impact.set_beam(tip - base,
                                       [(s.name, tip - s.position_cm[2]) for s in rig.sensors])
+        self.view_impact.set_rig(rig.name)
         self.refresh_channel_dependent_ui()
+        if rig.hammer:
+            self.view_impact.set_hammer(HAMMER_LABEL, rig.hammer.get("sensitivity_mv_n"))
         if remember and rig.path:
             QSettings("VibraStudio", "VibraStudio").setValue("last_rig", rig.path)
         self.statusBar().showMessage(
@@ -289,56 +292,13 @@ class MainWindow(QMainWindow):
         # A manual map replaces the rig; do not bring it back on the next connect.
         self.rig = None
         QSettings("VibraStudio", "VibraStudio").remove("last_rig")
+        self.view_impact.set_rig(None)
         self.view_ods.rig_label.setText("Global: +X right, +Y into the view, +Z up")
         self.statusBar().showMessage(
             f"Channels auto-mapped onto {self.view_ods.geometry.name} "
             f"({self.view_ods.geometry.n_nodes} nodes)")
 
     # -- impact test helpers -----------------------------------------------
-    def apply_beam_preset(self) -> None:
-        """Physical rig: 50 cm free cantilever, S1..S4 at 10/20/30/40 cm from
-        the tip (positions from the clamped base: 0.8/0.6/0.4/0.2), and the
-        9th channel used as the impact hammer.
-
-        Also builds the matching ODS geometry: base(fixed) - S4..S1 - tip,
-        node ids 1..6 bottom-up, so the 3D deflection animation uses the
-        true sensor heights and a clamped base."""
-        if self.rig is not None:     # a loaded rig already knows the real layout
-            self.open_rig_dialog()
-            return
-        import numpy as np
-
-        from ..geometry import Geometry
-        from .impact_view import FREE_LEN_CM, SENSOR_FROM_TIP_CM
-
-        # sensor point -> beam node (bottom-up: 1=base, 2=S4 ... 5=S1, 6=tip)
-        point_to_node = {1: 5, 2: 4, 3: 3, 4: 2}
-        for ch in self.cfg.channels:
-            if 1 <= ch.point <= len(SENSOR_FROM_TIP_CM):
-                d = SENSOR_FROM_TIP_CM[ch.point - 1]
-                ch.position = (FREE_LEN_CM - d) / FREE_LEN_CM
-                ch.point = point_to_node.get(ch.point, ch.point)
-        if len(self.cfg.channels) >= 9:
-            ham = self.cfg.channels[8]
-            ham.label = "HAMMER"
-            ham.enabled = True
-            ham.is_reference = False
-            ham.point = 6            # free tip (hit location)
-            ham.position = 1.0
-        self.sidebar.channel_table.load(self.cfg.channels)
-
-        heights = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-        nodes = np.array([[0.0, 0.0, z] for z in heights])
-        geo = Geometry("beam-rig", nodes, [(i, i + 1) for i in range(5)],
-                       {"shape": "beam-rig", "free_len_cm": FREE_LEN_CM},
-                       fixed=[0])
-        self.view_ods.geometry = geo
-        self.view_ods._user_geometry = True
-        self.view_ods._rebuild_static()
-        self.statusBar().showMessage(
-            "Beam preset: S1..S4 at 10/20/30/40 cm from tip (nodes 5..2), "
-            "base fixed, ch9 = HAMMER at tip")
-
     def _show_mode_in_ods(self, fn: float) -> None:
         self.view_ods.freq_spin.setValue(fn)
         self.tabs.setCurrentWidget(self.view_ods)

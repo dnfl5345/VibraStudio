@@ -43,6 +43,7 @@ Python(PySide6 + pyqtgraph)으로 구현했습니다.
     - 센서 + 영상 퓨전(`Sensors + video`, 센서를 4개 미만으로 지정하면 자동): 판정을 통과한 주파수에서만 영상 추적점을 같이 맞춘다. 카메라–DAQ 이득과 카메라 흔들림도 함께 푼다. 지정하지 않은 센서는 결과 검증에 쓴다
     - 카메라 나이퀴스트 위 주파수도 지정 가능(접힌 주파수에서 읽음). 결과: `synthesis_vs_video.mp4`, `synthesis_shapes.png`, JSON의 `synthesis`
     - 명령줄: 위 명령에 `--synth [--synth-freqs 5,18.9,37.8] [--synth-sensors S2,S8] [--synth-source auto|sensors|fusion]`
+- **충격 시험도 리그 기준**: Impact Test 탭은 적용된 리그의 센서 위치·축을 쓰고, 구조물 위 센서만 응답으로 사용(여분 입력 제외). 해머 입력은 리그 파일의 `"hammer": {"channel": "cDAQ9189-233EBC6Mod*/ai0", "sensitivity_mv_n": 2.25}`로 지정하면 자동 선택(`*`는 슬롯 무관). 리그가 없으면 탭에 빨간 경고가 뜨고, 저장 결과(`meta.json`)에 리그 이름과 응답 채널별 위치·방향이 기록됨
 - **재생 시 리그 재적용**: 리그가 적용된 상태에서 다른 센서 맵으로 녹화된 파일을 열면, 물리 채널 기준으로 리그를 적용할지 물음
 - **오프라인 섀시 처리**: 등록돼 있지만 응답하지 않는 섀시(분리된 섀시)는 연결 시 자동 제외되고, 옛 설정에 남은 채널은 시작 시 확인 후 제외
 - **헤드리스 수집 테스트**: `VibraStudio.exe --livecheck 30` → exe 옆 `livecheck.txt/json` (소스 실행 시 `outputs/`)

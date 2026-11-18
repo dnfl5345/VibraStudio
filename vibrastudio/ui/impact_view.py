@@ -1,5 +1,11 @@
 """Impact (modal hammer) test view: hit-location guide, triggered capture,
-averaged H1 FRF/coherence and modal identification for free-vibration modes."""
+averaged H1 FRF/coherence and modal identification for free-vibration modes.
+
+Sensor positions, directions and the hammer input come from the applied rig
+(ODS tab -> Sensor Setup). With a rig, only the sensors on the structure are
+responses; spare inputs are left out. Without one the tab says so: shapes are
+then drawn from the channel table as it is.
+"""
 
 from __future__ import annotations
 
@@ -14,24 +20,25 @@ from PySide6.QtWidgets import (
 from ..config import ChannelConfig
 from ..daq.engine import AcquisitionEngine
 from ..dsp.impact import ImpactAccumulator, identify_modes, impact_guide
+from ..rig import HAMMER_LABEL
 from . import theme
 from .views import BaseView, toolbar_row
 
-# Physical rig defaults: 60 cm beam, bottom 10 cm clamped in the jig ->
-# 50 cm free cantilever; sensors S1..S4 at 10/20/30/40 cm from the free tip.
+# Guide before any rig is applied: a 50 cm free cantilever, no sensors drawn.
 FREE_LEN_CM = 50.0
-SENSOR_FROM_TIP_CM = [10.0, 20.0, 30.0, 40.0]
 
 
 class ImpactView(BaseView):
-    beam_preset_requested = Signal()
+    rig_setup_requested = Signal()
     mode_frequency_selected = Signal(float)
 
     def __init__(self) -> None:
         super().__init__()
         self.channel_cfgs: list[ChannelConfig] = []
         self.free_len_cm = FREE_LEN_CM
-        self.sensors_from_tip = [(f"S{i+1}", d) for i, d in enumerate(SENSOR_FROM_TIP_CM)]
+        self.sensors_from_tip: list = []
+        self.rig_name = ""
+        self._hammer_picked = False        # the user chose the hammer input by hand
         self._armed = False
         self._mark = 0
         self._pending: int | None = None   # absolute trigger sample index
@@ -65,7 +72,9 @@ class ImpactView(BaseView):
         self.len_spin.setSuffix(" s")
         self.reject_chk = QCheckBox("Reject double-hit")
         self.reject_chk.setChecked(True)
-        self.preset_btn = QPushButton("Beam preset (4 sens @10cm)")
+        self.rig_label = QLabel()
+        self.rig_btn = QPushButton("Sensor Setup…")
+        self.rig_btn.setToolTip("Rig: sensor positions, axes and the hammer input")
 
         # -- controls row 2: run ------------------------------------------
         self.arm_btn = QPushButton("⚡ Arm Trigger")
@@ -145,7 +154,7 @@ class ImpactView(BaseView):
         lay.addLayout(toolbar_row("Hammer", self.hammer_box, self.hammer_sens,
                                   "Trigger", self.trig_spin, "Pre", self.pre_spin,
                                   "Length", self.len_spin, self.reject_chk,
-                                  "stretch", self.preset_btn))
+                                  "stretch", self.rig_label, self.rig_btn))
         lay.addLayout(toolbar_row(self.arm_btn, self.clear_btn,
                                   "Response", self.dir_box, self.save_btn,
                                   "stretch", self.status))
@@ -153,7 +162,8 @@ class ImpactView(BaseView):
 
         self.arm_btn.toggled.connect(self._arm_toggled)
         self.clear_btn.clicked.connect(self._clear)
-        self.preset_btn.clicked.connect(self.beam_preset_requested)
+        self.rig_btn.clicked.connect(self.rig_setup_requested)
+        self.hammer_box.activated.connect(lambda *_: setattr(self, "_hammer_picked", True))
         self.mode_table.itemSelectionChanged.connect(self._mode_selected)
         self.ods_btn.clicked.connect(self._send_to_ods)
         self.save_btn.clicked.connect(self._save_results)
@@ -161,6 +171,48 @@ class ImpactView(BaseView):
         self._hit_records: list[tuple[np.ndarray, np.ndarray]] = []
         self._sel_resp: list[tuple[int, int]] = []   # (row in acc, channel idx)
         self._last_resp_idx: list[int] = []
+        self._show_rig()
+
+    # -- rig ---------------------------------------------------------------
+    def set_rig(self, name: str | None) -> None:
+        """Name of the applied rig, or None when the channel table is not from a rig."""
+        self.rig_name = name or ""
+        if not name:
+            self.sensors_from_tip = []
+            self._draw_guide()
+        self._show_rig()
+
+    def rig_active(self) -> bool:
+        return bool(self.rig_name) and any(c.axis_vec is not None for c in self.channel_cfgs)
+
+    def _show_rig(self) -> None:
+        if self.rig_active():
+            n = len({c.point for c in self.channel_cfgs if c.point > 0})
+            self.rig_label.setText(f"Rig: {self.rig_name} · {n} sensors")
+            self.rig_label.setStyleSheet(f"color: {theme.TEXT_MUTED}")
+        else:
+            self.rig_label.setText("No rig applied — sensor positions unknown")
+            self.rig_label.setStyleSheet(f"color: {theme.RED}")
+
+    def set_hammer(self, label: str, sens_mv_n: float | None = None) -> None:
+        """Select the hammer input by label (from the rig) and its sensitivity."""
+        i = self.hammer_box.findText(label)
+        if i >= 0:
+            self.hammer_box.setCurrentIndex(i)
+            self._hammer_picked = False
+        if sens_mv_n:
+            self.hammer_sens.setValue(float(sens_mv_n))
+
+    def _from_tip_cm(self, c: ChannelConfig) -> float:
+        """Distance of a channel's sensor from the free tip (exact rig value when there is one)."""
+        if self.rig_active() and 1 <= c.point <= len(self.sensors_from_tip):
+            return float(self.sensors_from_tip[c.point - 1][1])
+        return self.free_len_cm * (1.0 - c.position)
+
+    def _responses(self, ham: int) -> list[int]:
+        """Channels used as responses: with a rig, only sensors on the structure."""
+        rig = self.rig_active()
+        return [i for i, c in enumerate(self.channel_cfgs) if i != ham and (not rig or c.point > 0)]
 
     # -- guide -----------------------------------------------------------
     def set_beam(self, free_len_cm: float, sensors_from_tip: list) -> None:
@@ -213,15 +265,15 @@ class ImpactView(BaseView):
         self.hammer_box.clear()
         self.hammer_box.addItems([c.label for c in cfgs])
         labels = [c.label for c in cfgs]
-        if cur in labels:
+        named = next((i for i, l in enumerate(labels) if "HAM" in l.upper()), -1)
+        if cur in labels and (self._hammer_picked or named < 0):
             self.hammer_box.setCurrentIndex(labels.index(cur))
         else:
-            # default: a channel literally named HAMMER, else the last one
-            idx = next((i for i, l in enumerate(labels) if "HAM" in l.upper()),
-                       len(labels) - 1)
-            self.hammer_box.setCurrentIndex(max(0, idx))
+            # default: the channel named HAMMER (set by the rig), else the last one
+            self.hammer_box.setCurrentIndex(max(0, named if named >= 0 else len(labels) - 1))
         self.hammer_box.blockSignals(False)
         self.acc = None   # channel set changed -> restart averaging
+        self._show_rig()
 
     # -- run state -------------------------------------------------------
     def _arm_toggled(self, on: bool) -> None:
@@ -292,7 +344,7 @@ class ImpactView(BaseView):
             return
 
         force = window[ham] * n_to_force
-        resp_idx = [i for i in range(len(self.channel_cfgs)) if i != ham]
+        resp_idx = self._responses(ham)
         resp = window[resp_idx]
         resp = resp - resp[:, :pre_n].mean(axis=1, keepdims=True)
 
@@ -322,7 +374,9 @@ class ImpactView(BaseView):
         self._last_resp = r_seg
         self.status.setText(
             f"hit {self.hits} accepted  (peak {pk * 1:.1f} N"
-            + (", double!" if double else "") + f", rejected {self.rejects})")
+            + (", double!" if double else "") + f", rejected {self.rejects})"
+            + ("  · coherence needs 2+ hits" if self.hits < 2 else "")
+            + ("" if self.rig_active() else "  · no rig: shapes follow the channel table"))
         self._redraw(resp_idx, fs)
 
     # -- drawing ----------------------------------------------------------
@@ -400,8 +454,7 @@ class ImpactView(BaseView):
             for j, (_, ch_i) in enumerate(self._sel_resp):
                 c = self.channel_cfgs[ch_i]
                 if c.direction == direction and j < shape.size:
-                    d_tip = self.free_len_cm * (1.0 - c.position)
-                    pts.append((d_tip, c.sign * float(shape[j])))
+                    pts.append((self._from_tip_cm(c), c.sign * float(shape[j])))
             pts.sort()
             if pts:
                 curve.setData([p[1] for p in pts], [p[0] for p in pts])
@@ -475,6 +528,18 @@ class ImpactView(BaseView):
             "capture_s": self.len_spin.value(),
             "response_filter": self.dir_box.currentText(),
             "sample_rate_hz": self.acc.fs,
+            "rig": self.rig_name if self.rig_active() else None,
+            "hammer_physical_channel": (self.channel_cfgs[self.hammer_box.currentIndex()].physical_channel
+                                        if 0 <= self.hammer_box.currentIndex() < len(self.channel_cfgs) else ""),
+            # one row per response, in the order of raw_hits.npz / frf.csv
+            "responses": [
+                {"label": c.label, "physical_channel": c.physical_channel, "point": c.point,
+                 "direction": c.direction, "sign": c.sign, "axis_vec": c.axis_vec,
+                 "sensor_axis": c.sensor_axis,
+                 "height_cm": (round(self.free_len_cm - self._from_tip_cm(c), 2)
+                               if self.rig_active() else None)}
+                for c in (self.channel_cfgs[i] for i in resp_idx)
+            ],
             "modes": [{"fn_hz": m["fn"], "zeta_pct": 100 * m["zeta"]}
                       for m in self.modes],
         }

@@ -15,6 +15,7 @@ A rig is plain JSON, so a structure read from photos can be written directly.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import sys
@@ -33,6 +34,7 @@ AXIS_TO_VEC = {
 }
 AXIS_CHOICES = list(AXIS_TO_VEC)
 LOCAL_AXES = ("X", "Y", "Z")
+HAMMER_LABEL = "HAMMER"
 
 
 def _rot(axis: int, deg: float) -> np.ndarray:
@@ -86,6 +88,10 @@ class Rig:
     extra_nodes: list[dict] = field(default_factory=list)
     edges: list[list[str]] = field(default_factory=list)  # by node name
     reference: str = ""                                   # label of the phase reference
+    # Impact hammer: {"channel": physical input, "sensitivity_mv_n": mV/N}. The
+    # channel may hold wildcards ("cDAQ9189-233EBC6Mod*/ai0"): the first
+    # detected input that matches is the hammer, whatever slot the module is in.
+    hammer: dict = field(default_factory=dict)
     path: str = ""
 
     # -- persistence ---------------------------------------------------------
@@ -103,6 +109,7 @@ class Rig:
             "extra_nodes": self.extra_nodes,
             "edges": self.edges,
             "reference": self.reference,
+            **({"hammer": self.hammer} if self.hammer else {}),
         }
 
     def save(self, path: str | Path) -> None:
@@ -129,6 +136,7 @@ class Rig:
             extra_nodes=list(d.get("extra_nodes", [])),
             edges=[list(e) for e in d.get("edges", [])],
             reference=str(d.get("reference", "")),
+            hammer=dict(d.get("hammer") or {}),
             path=str(path),
         )
         rig.validate()
@@ -164,10 +172,17 @@ class Rig:
         return Geometry(self.name, nodes, [(index[a], index[b]) for a, b in self.edges],
                         {"shape": "rig", "mounts": mounts}, fixed=fixed, node_labels=names)
 
-    def to_channels(self, detected: list[str] | None = None) -> list[ChannelConfig]:
-        """Channels of every sensor, plus any other detected input as AUX.
+    def hammer_channel(self, physical: list[str] | None) -> str:
+        """The input the impact hammer is on, among ``physical`` ('' if none)."""
+        pat = str(self.hammer.get("channel", ""))
+        if not pat or not physical:
+            return ""
+        return next((p for p in physical if fnmatch.fnmatchcase(p, pat)), "")
 
-        AUX inputs are recorded but have no place on the structure (point 0).
+    def to_channels(self, detected: list[str] | None = None) -> list[ChannelConfig]:
+        """Channels of every sensor, the hammer, plus any other detected input as AUX.
+
+        Hammer and AUX inputs are recorded but have no place on the structure (point 0).
         """
         z_top = self._z_extent()
         out: list[ChannelConfig] = []
@@ -191,6 +206,11 @@ class Rig:
                     axis_vec=[float(v) for v in vec],
                     sensor_axis=local,
                 ))
+        ham = self.hammer_channel([p for p in (detected or []) if p not in used])
+        if ham:
+            used.add(ham)
+            out.append(ChannelConfig(physical_channel=ham, label=HAMMER_LABEL, enabled=True,
+                                     point=0, direction="Z", position=0.0))
         for n, phys in enumerate((p for p in (detected or []) if p not in used), start=1):
             out.append(ChannelConfig(physical_channel=phys, label=f"AUX{n}", enabled=True,
                                      point=0, direction="Z", position=0.0))
@@ -214,10 +234,16 @@ class Rig:
         Rows get physical_channel 'file/ch<i>' like any playback channel.
         """
         base = {c.physical_channel: c for c in self.to_channels()}
+        ham = self.hammer_channel([str(e.get("physical_channel", "")) for e in channel_map
+                                   if str(e.get("physical_channel", "")) not in base])
         out, hits, aux = [], 0, 0
         for i, entry in enumerate(channel_map):
             c = base.get(str(entry.get("physical_channel", "")))
-            if c is not None:
+            if ham and str(entry.get("physical_channel", "")) == ham:
+                out.append(ChannelConfig(physical_channel=f"file/ch{i}", label=HAMMER_LABEL,
+                                         point=0, direction="Z", position=0.0,
+                                         enabled=bool(entry.get("enabled", True))))
+            elif c is not None:
                 hits += 1
                 out.append(ChannelConfig(**{**c.__dict__, "physical_channel": f"file/ch{i}",
                                             "enabled": bool(entry.get("enabled", True))}))

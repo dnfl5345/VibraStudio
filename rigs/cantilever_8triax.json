@@ -19,5 +19,6 @@
     ["Clamp", "S1"], ["S1", "S2"], ["S2", "S3"], ["S3", "S4"],
     ["S4", "S5"], ["S5", "S6"], ["S6", "S7"], ["S7", "S8"]
   ],
-  "reference": "S8_Y"
+  "reference": "S8_Y",
+  "hammer": {"channel": "cDAQ9189-233EBC6Mod*/ai0", "sensitivity_mv_n": 2.25}
 }
