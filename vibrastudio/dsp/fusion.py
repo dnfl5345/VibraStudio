@@ -26,6 +26,23 @@ import numpy as np
 
 BETA = (1.8751, 4.6941, 7.8548, 10.9955, 14.1372)
 MODEL_FLOOR = 0.01            # the shape model itself is not better than ~1 % of the largest amplitude
+# Which rigid motions of the base the structure may have. A shaker moves the clamp
+# ("both"); in a hammer test the clamp stands still, or at most gives a little
+# in rotation ("rotation"), and saying so lets the model reach below the camera's view.
+RIGID = {"both": (0, 1), "rotation": (1,), "none": ()}
+
+
+def _columns(rigid: str, max_modes: int) -> tuple[list[int], int]:
+    r = RIGID[rigid]
+    return list(r) + list(range(2, 2 + max_modes)), len(r)
+
+
+def _full(q: np.ndarray, idx: list[int], n_rigid: int) -> tuple[np.ndarray, int]:
+    """Coefficients on the full [1, z/L, phi_1..] basis, and the number of bending shapes used."""
+    n_modes = max(0, len(q) - n_rigid)
+    out = np.zeros(2 + n_modes, complex)
+    out[idx[:len(q)]] = q
+    return out, n_modes
 
 
 def alias(f: float, fps: float) -> tuple[float, bool]:
@@ -79,17 +96,19 @@ class ShapeFit:
         return beam_basis(z_cm, self.length_cm, self.n_modes) @ self.q
 
 
-def fit_sensors(z_s, y_s, length_cm: float, sigma_s=None, max_modes: int = 4) -> ShapeFit:
+def fit_sensors(z_s, y_s, length_cm: float, sigma_s=None, max_modes: int = 4, rigid: str = "both") -> ShapeFit:
     """Sensors only. The number of bending shapes is the one that predicts a left-out sensor best."""
     z_s, y_s = np.asarray(z_s, float), np.asarray(y_s, complex)
     n = len(y_s)
     w = _weights(y_s, sigma_s)
-    B = beam_basis(z_s, length_cm, max_modes)
-    if n <= 2:                                           # nothing to leave out: rigid terms only
-        p, err = min(n, 2), float("nan")
+    idx, nr = _columns(rigid, max_modes)
+    B = beam_basis(z_s, length_cm, max_modes)[:, idx]
+    pmin = max(nr, 1)
+    if n <= pmin:                                        # nothing to leave out: the first columns only
+        p, err = min(n, pmin), float("nan")
     else:
         errs = {}
-        for p in range(2, min(n - 1, 2 + max_modes) + 1):
+        for p in range(pmin, min(n - 1, len(idx)) + 1):
             res = []
             for i in range(n):
                 k = np.arange(n) != i
@@ -97,16 +116,15 @@ def fit_sensors(z_s, y_s, length_cm: float, sigma_s=None, max_modes: int = 4) ->
             errs[p] = float(np.linalg.norm(res) / (np.linalg.norm(y_s) + 1e-30))
         p = min(errs, key=errs.get)
         err = errs[p]
-    q = wls(B[:, :p], y_s, w)
-    q = np.r_[q, np.zeros(max(0, 2 - p))]
-    return ShapeFit(q, max(0, p - 2), length_cm, "sensors", err, n_sensors=n)
+    q, n_modes = _full(wls(B[:, :p], y_s, w), idx, nr)
+    return ShapeFit(q, n_modes, length_cm, "sensors", err, n_sensors=n)
 
 
-def _video_order(B: np.ndarray, y: np.ndarray, w: np.ndarray, max_modes: int, folds: int = 5) -> tuple[int, float]:
+def _video_order(B: np.ndarray, y: np.ndarray, w: np.ndarray, pmin: int, folds: int = 5) -> tuple[int, float]:
     """Number of columns that predicts left-out video points best (interleaved folds)."""
     n = len(y)
     errs = {}
-    for p in range(2, min(n - n // folds - 1, 2 + max_modes) + 1):
+    for p in range(pmin, min(n - n // folds - 1, B.shape[1]) + 1):
         num = 0.0
         for k in range(folds):
             out = np.arange(n) % folds == k
@@ -120,23 +138,25 @@ def _video_order(B: np.ndarray, y: np.ndarray, w: np.ndarray, max_modes: int, fo
 
 def fit_fusion(z_s, y_s, z_v, y_v, length_cm: float, sigma_s=None, sigma_v=None, *,
                gain: complex | None = None, gain_abs: float | None = None, camera: bool = False,
-               max_modes: int = 4, iters: int = 20) -> ShapeFit:
+               max_modes: int = 4, iters: int = 20, rigid: str = "both") -> ShapeFit:
     """Sensors + video on one shape.
 
     gain      known complex video/sensor gain (a harmonic of the line used for alignment)
     gain_abs  only |g| known, the phase is found (a line unrelated to the alignment line)
     neither   g is found from the data (the alignment line itself)
     camera    also solve rigid motion of the camera; needs 2 sensors with a known gain, 3 otherwise
+    rigid     base motion the structure may have: "both", "rotation" or "none" (see RIGID)
     """
     z_s, y_s = np.asarray(z_s, float), np.asarray(y_s, complex)
     z_v, y_v = np.asarray(z_v, float), np.asarray(y_v, complex)
     ns, nv = len(y_s), len(y_v)
     ws, wv = _weights(y_s, sigma_s), _weights(y_v, sigma_v)
-    Bs, Bv = beam_basis(z_s, length_cm, max_modes), beam_basis(z_v, length_cm, max_modes)
-    p, err = _video_order(Bv, y_v, wv, max_modes)
+    idx, nr = _columns(rigid, max_modes)
+    Bs, Bv = beam_basis(z_s, length_cm, max_modes)[:, idx], beam_basis(z_v, length_cm, max_modes)[:, idx]
+    p, err = _video_order(Bv, y_v, wv, max(nr, 1))
     Bs, Bv = Bs[:, :p], Bv[:, :p]
     camera = bool(camera and ns >= (2 if gain is not None else 3))
-    Cv = Bv[:, :2] if camera else np.zeros((nv, 0))
+    Cv = beam_basis(z_v, length_cm, 0) if camera else np.zeros((nv, 0))
     Zs = np.zeros((ns, Cv.shape[1]))
 
     def solve(g: complex) -> np.ndarray:
@@ -160,7 +180,8 @@ def fit_fusion(z_s, y_s, z_v, y_v, length_cm: float, sigma_s=None, sigma_v=None,
             if abs(g_new - g) < 1e-9 * abs(g):
                 break
             g, x = g_new, solve(g_new)
-    return ShapeFit(x[:p].copy(), p - 2, length_cm, "fusion", err, complex(g),
+    q, n_modes = _full(x[:p], idx, nr)
+    return ShapeFit(q, n_modes, length_cm, "fusion", err, complex(g),
                     x[p:].copy() if camera else None, ns, nv)
 
 
