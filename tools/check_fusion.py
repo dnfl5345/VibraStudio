@@ -81,6 +81,11 @@ low = zs[:3]
 check("clamped model, view 16-49 cm + tip sensor: error at the 3 sensors below the view",
       float(np.linalg.norm(part(low) - tc(low)) / np.linalg.norm(tc(low))), 0.1)
 
+# custom shapes (e.g. finite-element modes): same data, basis given as a function
+fe = lambda z: fu.beam_basis(z, L, 3)[:, 2:]
+cust = fu.fit_fusion(zs[[7]], tc(zs[[7]]), zu, 0.6 * tc(zu) + noise(32, 0.004), L, None, np.full(32, 0.004), basis=fe)
+check("custom basis: same test", float(np.linalg.norm(cust(low) - tc(low)) / np.linalg.norm(tc(low))), 0.1)
+
 a = fu.alias(132.3, 230.819)
 ok &= abs(a[0] - 98.519) < 1e-3 and a[1] and fu.alias(18.9, 230.819) == (18.9, False)
 print(f"alias 132.3 Hz at 230.819 fps -> {a[0]:.3f} Hz, conjugated {a[1]}")
